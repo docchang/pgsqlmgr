@@ -194,3 +194,4 @@ cython_debug/
 .cursorindexingignore.cursor/
 .env
 docs/design
+.cursor/*
