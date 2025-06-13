@@ -4,7 +4,7 @@ import os
 import yaml
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from rich.console import Console
 
 console = Console()
@@ -38,7 +38,8 @@ class SSHHost(BaseModel):
     database: Optional[str] = None
     description: Optional[str] = None
     
-    @validator('ssh_config')
+    @field_validator('ssh_config')
+    @classmethod
     def validate_ssh_config(cls, v):
         """Validate SSH config shortcut exists in ~/.ssh/config."""
         if v is not None:
@@ -81,7 +82,8 @@ class PostgreSQLManagerConfig(BaseModel):
     
     hosts: Dict[str, HostConfig] = Field(default_factory=dict)
     
-    @validator('hosts')
+    @field_validator('hosts')
+    @classmethod
     def validate_hosts_not_empty(cls, v):
         """Ensure at least one host is configured."""
         if not v:

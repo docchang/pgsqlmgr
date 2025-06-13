@@ -43,62 +43,204 @@ git clone https://github.com/docchang/pgsqlmgr.git
 cd pgsqlmgr
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -e .
+pip install -e . --use-pep517
 pgsqlmgr --help
 ```
 
+## 🚀 Quick Start
+
+1. **Install the package** (developers):
+   ```bash
+   git clone https://github.com/docchang/pgsqlmgr.git
+   cd pgsqlmgr
+   python -m venv .venv && source .venv/bin/activate
+   pip install -e .
+   ```
+
+2. **Set up SSH config** (for remote hosts):
+   ```bash
+   # Add entries to ~/.ssh/config
+   Host production
+       HostName your-server.com
+       User your-username
+       IdentityFile ~/.ssh/id_rsa
+   ```
+
+3. **Initialize configuration**:
+   ```bash
+   pgsqlmgr init-config
+   ```
+
+4. **List your hosts**:
+   ```bash
+   pgsqlmgr list-hosts
+   ```
+
+5. **View host details**:
+   ```bash
+   pgsqlmgr show-config production
+   ```
+
 ## 💻 Usage
 
+### Prerequisites
+
+**SSH Configuration**: Before using SSH features, configure your `~/.ssh/config` file:
+
+```bash
+# ~/.ssh/config
+Host production
+    HostName production.example.com
+    User admin
+    IdentityFile ~/.ssh/id_rsa
+
+Host staging
+    HostName staging.example.com
+    User deploy
+    IdentityFile ~/.ssh/id_rsa
+```
+
 ### Configuration
-Create a configuration file at `~/.pgsqlmgr/config.yaml`:
+
+Initialize your configuration:
+```bash
+pgsqlmgr init-config
+```
+
+Or manually create `~/.pgsqlmgr/config.yaml`:
 
 ```yaml
 hosts:
   local:
     type: local
-    pg_user: postgres
-    pg_port: 5432
-    pg_host: localhost
+    host: localhost
+    port: 5432
+    user: postgres
+    password: your_password_here
+    description: Local PostgreSQL instance
 
-  production-server:
+  production:
     type: ssh
-    ssh_alias: prod-server
-    pg_user: postgres
-    pg_port: 5432
+    ssh_config: production  # References ~/.ssh/config entry
+    host: localhost
+    port: 5432
+    user: postgres
+    password: production_password
+    description: Production server via SSH
 
-  staging-server:
+  staging:
     type: ssh
-    ssh_alias: staging
-    pg_user: admin
-    pg_port: 5432
+    ssh_config: staging  # References ~/.ssh/config entry
+    host: localhost
+    port: 5432
+    user: admin
+    password: staging_password
+    description: Staging server via SSH
 ```
 
-### Basic Commands
+### Available Commands
+
+#### Core Commands
 ```bash
-# List configured hosts
+# Show help and available commands
+pgsqlmgr --help
+
+# Show version information
+pgsqlmgr --version
+
+# Initialize sample configuration file
+pgsqlmgr init-config
+
+# List all configured hosts with connection details
 pgsqlmgr list-hosts
 
+# Show detailed configuration for a specific host
+pgsqlmgr show-config <host_name>
+pgsqlmgr show-config production
+pgsqlmgr show-config local
+```
+
+#### Command Options
+Most commands support these global options:
+```bash
+# Use custom configuration file location
+pgsqlmgr --config /path/to/config.yaml list-hosts
+
+# Get help for specific commands
+pgsqlmgr show-config --help
+pgsqlmgr list-hosts --help
+```
+
+#### Example Output
+
+**List Hosts:**
+```bash
+$ pgsqlmgr list-hosts
+                                            Configured Hosts                                             
+┏━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Host Name  ┃ Type  ┃ Connection                      ┃ Description                                    ┃
+┡━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ local      │ local │ localhost:5432                  │ Local PostgreSQL instance                      │
+│ production │ ssh   │ ssh production → localhost:5432 │ Production server via SSH (uses ~/.ssh/config) │
+│ staging    │ ssh   │ ssh staging → localhost:5432    │ Staging server via SSH (uses ~/.ssh/config)    │
+└────────────┴───────┴─────────────────────────────────┴────────────────────────────────────────────────┘
+```
+
+**Show Config:**
+```bash
+$ pgsqlmgr show-config production
+╭─────── Host Configuration: production ────────╮
+│ Type: ssh                                      │
+│ SSH Command: ssh production                    │
+│ Database Host: localhost:5432                  │
+│ Database User: postgres                        │
+│ Description: Production server via SSH         │
+╰────────────────────────────────────────────────╯
+```
+
+**Help Output:**
+```bash
+$ pgsqlmgr --help
+
+Usage: pgsqlmgr [OPTIONS] COMMAND [ARGS]...
+
+PostgreSQL Manager - Manage PostgreSQL instances across local and remote environments
+
+Commands:
+  init-config       Initialize a sample configuration file.
+  list-hosts        List all configured PostgreSQL hosts.
+  show-config       Show configuration for a specific host.
+  check-install     Check PostgreSQL installation on a host.
+  install           Install PostgreSQL on a host.
+  sync-db           Sync a database between two hosts.
+  delete-db         Delete a database from a host.
+  generate-pgpass   Generate .pgpass file from configuration.
+```
+
+#### Future Commands (Coming in v1.0)
+```bash
 # Check PostgreSQL installation
-pgsqlmgr check-install production-server
+pgsqlmgr check-install production
 
 # Install PostgreSQL on remote host
-pgsqlmgr install production-server
+pgsqlmgr install production
 
 # Sync database between hosts
-pgsqlmgr sync-db local myapp_db production-server
+pgsqlmgr sync-db local myapp_db production
 
 # Generate .pgpass file
 pgsqlmgr generate-pgpass
 
 # Delete database (with confirmation)
-pgsqlmgr delete-db staging-server old_db
+pgsqlmgr delete-db staging old_db
 ```
 
 ## 🛠️ Requirements
 
 - **Python**: 3.10 or higher
 - **Local PostgreSQL**: For local database operations
-- **SSH Access**: For remote server management (passwordless SSH recommended)
+- **SSH Configuration**: Pre-configured `~/.ssh/config` entries for remote servers
+- **SSH Key Authentication**: Passwordless SSH access to remote hosts
 - **Operating System**: 
   - macOS (primary development platform)
   - Linux (Ubuntu/Debian for remote servers)

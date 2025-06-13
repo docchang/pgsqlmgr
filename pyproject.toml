@@ -51,7 +51,7 @@ Issues = "https://github.com/docchang/pgsqlmgr/issues"
 Documentation = "https://github.com/docchang/pgsqlmgr/blob/main/README.md"
 
 [project.scripts]
-pgsqlmgr = "pgsqlmgr.main:main"
+pgsqlmgr = "pgsqlmgr.main:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
