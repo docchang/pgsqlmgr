@@ -4,6 +4,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 from typing import Optional
 from pathlib import Path
 
@@ -14,7 +15,9 @@ from .config import (
     get_host_config,
     list_hosts as get_host_list,
     DEFAULT_CONFIG_FILE,
+    validate_config_file,
 )
+from .db import PostgreSQLManager
 
 # Initialize console for rich output
 console = Console()
@@ -187,17 +190,200 @@ def show_config(
 
 
 @app.command()
-def check_install(host: str) -> None:
+def check_install(
+    host: str,
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file"
+    )
+) -> None:
     """Check PostgreSQL installation on a host."""
-    console.print(f"[yellow]⚠️  Not implemented yet[/yellow]")
-    console.print(f"This command will check PostgreSQL installation on: [blue]{host}[/blue]")
+    try:
+        path = Path(config_path) if config_path else None
+        host_config = get_host_config(host, path)
+        
+        console.print(f"[blue]🔍 Checking PostgreSQL installation on '{host}'...[/blue]")
+        
+        # Create PostgreSQL manager and check installation
+        pg_manager = PostgreSQLManager(host_config)
+        is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
+        
+        if is_installed:
+            console.print(Panel(
+                f"✅ {status_msg}\n[bold]Version:[/bold] {version_info}",
+                title=f"Installation Status: {host}",
+                title_align="left",
+                style="green"
+            ))
+            
+            # Also check service status
+            console.print(f"[blue]🔍 Checking PostgreSQL service status...[/blue]")
+            is_running, service_msg = pg_manager.check_service_status()
+            
+            if is_running:
+                console.print(Panel(
+                    f"✅ {service_msg}",
+                    title="Service Status",
+                    title_align="left",
+                    style="green"
+                ))
+            else:
+                console.print(Panel(
+                    f"⚠️  {service_msg}",
+                    title="Service Status",
+                    title_align="left",
+                    style="yellow"
+                ))
+                console.print(f"[yellow]💡 To start the service, run: [bold]pgsqlmgr start-service {host}[/bold][/yellow]")
+        else:
+            console.print(Panel(
+                f"❌ {status_msg}",
+                title=f"Installation Status: {host}",
+                title_align="left",
+                style="red"
+            ))
+            console.print(f"[yellow]💡 To install PostgreSQL, run: [bold]pgsqlmgr install {host}[/bold][/yellow]")
+        
+    except KeyError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        raise typer.Exit(1)
+    except FileNotFoundError:
+        console.print("[red]❌ Configuration file not found[/red]")
+        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]❌ Error checking installation: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()
-def install(host: str) -> None:
+def install(
+    host: str,
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file"
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force installation even if PostgreSQL is already installed"
+    )
+) -> None:
     """Install PostgreSQL on a host."""
-    console.print(f"[yellow]⚠️  Not implemented yet[/yellow]")
-    console.print(f"This command will install PostgreSQL on: [blue]{host}[/blue]")
+    try:
+        path = Path(config_path) if config_path else None
+        host_config = get_host_config(host, path)
+        
+        console.print(f"[blue]🔧 Installing PostgreSQL on '{host}'...[/blue]")
+        
+        # Create PostgreSQL manager
+        pg_manager = PostgreSQLManager(host_config)
+        
+        # Check if already installed (unless force is used)
+        if not force:
+            is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
+            if is_installed:
+                console.print(Panel(
+                    f"✅ PostgreSQL is already installed\n[bold]Version:[/bold] {version_info}",
+                    title=f"Installation Status: {host}",
+                    title_align="left",
+                    style="green"
+                ))
+                console.print("[yellow]💡 Use --force to reinstall or run check-install to verify[/yellow]")
+                return
+        
+        # Proceed with installation
+        success, message = pg_manager.install_postgresql()
+        
+        if success:
+            console.print(Panel(
+                f"✅ {message}",
+                title=f"Installation Complete: {host}",
+                title_align="left",
+                style="green"
+            ))
+            
+            # Verify installation worked
+            console.print(f"[blue]🔍 Verifying installation...[/blue]")
+            is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
+            
+            if is_installed:
+                console.print(f"[green]✅ Verification successful: {version_info}[/green]")
+            else:
+                console.print(f"[yellow]⚠️  Installation completed but verification failed: {status_msg}[/yellow]")
+        else:
+            console.print(Panel(
+                f"❌ {message}",
+                title=f"Installation Failed: {host}",
+                title_align="left",
+                style="red"
+            ))
+            raise typer.Exit(1)
+        
+    except KeyError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        raise typer.Exit(1)
+    except FileNotFoundError:
+        console.print("[red]❌ Configuration file not found[/red]")
+        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]❌ Error during installation: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def start_service(
+    host: str,
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file"
+    )
+) -> None:
+    """Start PostgreSQL service on a host."""
+    try:
+        path = Path(config_path) if config_path else None
+        host_config = get_host_config(host, path)
+        
+        console.print(f"[blue]🚀 Starting PostgreSQL service on '{host}'...[/blue]")
+        
+        # Create PostgreSQL manager and start service
+        pg_manager = PostgreSQLManager(host_config)
+        success, message = pg_manager.start_service()
+        
+        if success:
+            console.print(Panel(
+                f"✅ {message}",
+                title=f"Service Status: {host}",
+                title_align="left",
+                style="green"
+            ))
+        else:
+            console.print(Panel(
+                f"❌ {message}",
+                title=f"Service Status: {host}",
+                title_align="left",
+                style="red"
+            ))
+            raise typer.Exit(1)
+        
+    except KeyError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        raise typer.Exit(1)
+    except FileNotFoundError:
+        console.print("[red]❌ Configuration file not found[/red]")
+        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]❌ Error starting service: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -226,6 +412,75 @@ def generate_pgpass() -> None:
     """Generate .pgpass file from configuration."""
     console.print("[yellow]⚠️  Not implemented yet[/yellow]")
     console.print("This command will generate .pgpass entries from your configuration")
+
+
+@app.command()
+def validate_config(
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file to validate"
+    )
+) -> None:
+    """Validate configuration file without executing any operations."""
+    try:
+        path = Path(config_path) if config_path else None
+        is_valid, errors = validate_config_file(path)
+        
+        config_file_path = path or DEFAULT_CONFIG_FILE
+        
+        if is_valid:
+            console.print(Panel(
+                Text("✅ Configuration is valid!", style="bold green"),
+                title=f"Validation Result: {config_file_path}",
+                title_align="left",
+                style="green"
+            ))
+            
+            # Show summary of valid configuration
+            try:
+                config = load_config(path)
+                host_count = len(config.hosts)
+                local_count = sum(1 for host in config.hosts.values() if host.type == "local")
+                ssh_count = sum(1 for host in config.hosts.values() if host.type == "ssh")
+                cloud_count = sum(1 for host in config.hosts.values() if host.type == "cloud")
+                
+                summary_text = f"Found {host_count} configured host(s):"
+                if local_count > 0:
+                    summary_text += f"\n  • {local_count} local host(s)"
+                if ssh_count > 0:
+                    summary_text += f"\n  • {ssh_count} SSH host(s)"
+                if cloud_count > 0:
+                    summary_text += f"\n  • {cloud_count} cloud host(s)"
+                
+                console.print(Panel(
+                    summary_text,
+                    title="Configuration Summary",
+                    title_align="left",
+                    style="blue"
+                ))
+                
+            except Exception as e:
+                console.print(f"[yellow]Note: Could not load config summary: {e}[/yellow]")
+        else:
+            console.print(Panel(
+                Text("❌ Configuration validation failed!", style="bold red"),
+                title=f"Validation Result: {config_file_path}",
+                title_align="left",
+                style="red"
+            ))
+            
+            console.print("\n[bold red]Errors found:[/bold red]")
+            for i, error in enumerate(errors, 1):
+                console.print(f"  {i}. {error}")
+            
+            console.print(f"\n[yellow]Fix these errors and run [bold]pgsqlmgr validate-config[/bold] again[/yellow]")
+            raise typer.Exit(1)
+            
+    except Exception as e:
+        console.print(f"[red]❌ Error validating configuration: {e}[/red]")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,14 @@
 """Configuration loading and validation for PostgreSQL Manager."""
 
 import os
+import re
 import yaml
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ValidationError
 from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 console = Console()
 
@@ -89,6 +92,69 @@ class PostgreSQLManagerConfig(BaseModel):
         if not v:
             raise ValueError("At least one host must be configured")
         return v
+    
+    @field_validator('hosts')
+    @classmethod
+    def validate_host_names(cls, v):
+        """Validate host names contain only valid characters."""
+        for host_name in v.keys():
+            if not re.match(r'^[a-zA-Z0-9_-]+$', host_name):
+                raise ValueError(f"Host name '{host_name}' contains invalid characters. Use only letters, numbers, underscore, and dash.")
+            if len(host_name) > 50:
+                raise ValueError(f"Host name '{host_name}' is too long (max 50 characters)")
+        return v
+
+
+def validate_config_file(config_path: Optional[Path] = None) -> tuple[bool, List[str]]:
+    """
+    Validate configuration file and return validation results.
+    
+    Args:
+        config_path: Path to configuration file
+        
+    Returns:
+        Tuple of (is_valid, list_of_errors)
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_FILE
+    
+    errors = []
+    
+    # Check if file exists
+    if not config_path.exists():
+        errors.append(f"Configuration file not found: {config_path}")
+        return False, errors
+    
+    # Check if file is readable
+    try:
+        with open(config_path, 'r') as f:
+            raw_config = yaml.safe_load(f)
+    except PermissionError:
+        errors.append(f"Permission denied reading configuration file: {config_path}")
+        return False, errors
+    except yaml.YAMLError as e:
+        errors.append(f"Invalid YAML syntax: {e}")
+        return False, errors
+    except Exception as e:
+        errors.append(f"Error reading configuration file: {e}")
+        return False, errors
+    
+    # Check if YAML is empty
+    if raw_config is None:
+        errors.append("Configuration file is empty")
+        return False, errors
+    
+    # Validate against Pydantic model
+    try:
+        PostgreSQLManagerConfig(**raw_config)
+    except ValidationError as e:
+        for error in e.errors():
+            field_path = " -> ".join(str(x) for x in error['loc'])
+            errors.append(f"Validation error in {field_path}: {error['msg']}")
+    except Exception as e:
+        errors.append(f"Configuration validation error: {e}")
+    
+    return len(errors) == 0, errors
 
 
 def load_config(config_path: Optional[Path] = None) -> PostgreSQLManagerConfig:
@@ -118,13 +184,31 @@ def load_config(config_path: Optional[Path] = None) -> PostgreSQLManagerConfig:
     try:
         with open(config_path, 'r') as f:
             raw_config = yaml.safe_load(f)
+    except PermissionError as e:
+        raise PermissionError(f"Permission denied reading configuration file: {config_path}")
     except yaml.YAMLError as e:
-        raise yaml.YAMLError(f"Invalid YAML in configuration file: {e}")
+        # Enhanced YAML error messages
+        line_info = ""
+        if hasattr(e, 'problem_mark'):
+            mark = e.problem_mark
+            line_info = f" (line {mark.line + 1}, column {mark.column + 1})"
+        raise yaml.YAMLError(f"Invalid YAML syntax in configuration file{line_info}: {e}")
     
     if raw_config is None:
-        raw_config = {}
+        raise ValueError("Configuration file is empty")
     
-    return PostgreSQLManagerConfig(**raw_config)
+    try:
+        return PostgreSQLManagerConfig(**raw_config)
+    except ValidationError as e:
+        # Enhanced validation error messages
+        error_messages = []
+        for error in e.errors():
+            field_path = " -> ".join(str(x) for x in error['loc'])
+            error_messages.append(f"  • {field_path}: {error['msg']}")
+        
+        raise ValueError(
+            f"Configuration validation failed:\n" + "\n".join(error_messages)
+        )
 
 
 def create_sample_config(config_path: Optional[Path] = None) -> None:
@@ -150,22 +234,22 @@ def create_sample_config(config_path: Optional[Path] = None) -> None:
                 "password": "your_password_here",
                 "description": "Local PostgreSQL instance"
             },
-            "production": {
+            "genesis": {
                 "type": "ssh",
-                "ssh_config": "production",
-                "host": "localhost",
-                "port": 5432,
-                "user": "postgres", 
-                "password": "production_password",
-                "description": "Production server via SSH (uses ~/.ssh/config)"
-            },
-            "staging": {
-                "type": "ssh",
-                "ssh_config": "staging",
+                "ssh_config": "genesis",
                 "host": "localhost",
                 "port": 5432,
                 "user": "postgres",
-                "description": "Staging server via SSH (uses ~/.ssh/config)"
+                "password": "genesis_password",
+                "description": "Genesis server via SSH"
+            },
+            "skynet": {
+                "type": "ssh",
+                "ssh_config": "skynet",
+                "host": "localhost",
+                "port": 5432,
+                "user": "postgres",
+                "description": "Skynet server via SSH"
             }
         }
     }
