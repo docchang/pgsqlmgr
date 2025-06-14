@@ -18,6 +18,7 @@ from .config import (
     validate_config_file,
 )
 from .db import PostgreSQLManager
+from .sync import DatabaseSyncManager
 
 # Initialize console for rich output
 console = Console()
@@ -389,15 +390,105 @@ def start_service(
 @app.command()
 def sync_db(
     source_host: str,
-    database: str, 
-    destination_host: str
+    database_name: str,
+    destination_host: str,
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file"
+    ),
+    drop_existing: bool = typer.Option(
+        False,
+        "--drop-existing",
+        help="Drop existing database at destination before sync"
+    ),
+    data_only: bool = typer.Option(
+        False,
+        "--data-only",
+        help="Sync only data (no schema)"
+    ),
+    schema_only: bool = typer.Option(
+        False,
+        "--schema-only",
+        help="Sync only schema (no data)"
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would be done without executing"
+    )
 ) -> None:
     """Sync a database between two hosts."""
-    console.print(f"[yellow]⚠️  Not implemented yet[/yellow]")
-    console.print(
-        f"This command will sync database [blue]{database}[/blue] "
-        f"from [blue]{source_host}[/blue] to [blue]{destination_host}[/blue]"
-    )
+    try:
+        # Validate mutually exclusive options
+        if data_only and schema_only:
+            console.print("[red]❌ --data-only and --schema-only are mutually exclusive[/red]")
+            raise typer.Exit(1)
+        
+        path = Path(config_path) if config_path else None
+        
+        # Get source and destination configurations
+        source_config = get_host_config(source_host, path)
+        dest_config = get_host_config(destination_host, path)
+        
+        if dry_run:
+            console.print(f"[blue]🔍 Dry run: Database sync simulation[/blue]")
+            console.print(f"[blue]   Source: {source_host} → Database: {database_name}[/blue]")
+            console.print(f"[blue]   Destination: {destination_host}[/blue]")
+            
+            options = []
+            if drop_existing:
+                options.append("Drop existing database")
+            if data_only:
+                options.append("Data only")
+            elif schema_only:
+                options.append("Schema only")
+            else:
+                options.append("Full sync (schema + data)")
+            
+            console.print(f"[blue]   Options: {', '.join(options)}[/blue]")
+            console.print("[yellow]💡 Remove --dry-run to execute the sync[/yellow]")
+            return
+        
+        # Create sync manager
+        sync_manager = DatabaseSyncManager(source_config, dest_config)
+        
+        # Check if source and destination are the same
+        if source_host == destination_host:
+            console.print("[red]❌ Source and destination hosts cannot be the same[/red]")
+            raise typer.Exit(1)
+        
+        # Perform the sync
+        console.print(f"[blue]🚀 Starting database synchronization...[/blue]")
+        
+        success, message = sync_manager.sync_database(
+            database_name=database_name,
+            drop_existing=drop_existing,
+            data_only=data_only,
+            schema_only=schema_only
+        )
+        
+        if success:
+            console.print(f"[green]✅ {message}[/green]")
+        else:
+            console.print(Panel(
+                f"❌ {message}",
+                title="Sync Failed",
+                style="red"
+            ))
+            raise typer.Exit(1)
+        
+    except KeyError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        raise typer.Exit(1)
+    except FileNotFoundError:
+        console.print("[red]❌ Configuration file not found[/red]")
+        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]❌ Error during sync: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -480,6 +571,61 @@ def validate_config(
             
     except Exception as e:
         console.print(f"[red]❌ Error validating configuration: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def list_databases(
+    host: str,
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file"
+    )
+) -> None:
+    """List databases on a host."""
+    try:
+        path = Path(config_path) if config_path else None
+        host_config = get_host_config(host, path)
+        
+        console.print(f"[blue]📋 Listing databases on '{host}'...[/blue]")
+        
+        # Create sync manager to use database listing functionality
+        sync_manager = DatabaseSyncManager(host_config, host_config)  # Same host for both
+        success, databases, error_msg = sync_manager.list_databases(host_config)
+        
+        if success:
+            if databases:
+                table = Table(title=f"Databases on {host}")
+                table.add_column("Database Name", style="cyan", no_wrap=True)
+                table.add_column("Status", style="green")
+                
+                for db_name in databases:
+                    table.add_row(db_name, "Available")
+                
+                console.print(table)
+                console.print(f"[green]✅ Found {len(databases)} database(s)[/green]")
+            else:
+                console.print(f"[yellow]⚠️  No user databases found on {host}[/yellow]")
+                console.print("[yellow]   (System databases like 'postgres' and 'template*' are hidden)[/yellow]")
+        else:
+            console.print(Panel(
+                f"❌ {error_msg}",
+                title=f"Database List Failed: {host}",
+                style="red"
+            ))
+            raise typer.Exit(1)
+        
+    except KeyError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        raise typer.Exit(1)
+    except FileNotFoundError:
+        console.print("[red]❌ Configuration file not found[/red]")
+        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]❌ Error listing databases: {e}[/red]")
         raise typer.Exit(1)
 
 
