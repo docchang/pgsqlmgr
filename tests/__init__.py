@@ -1,1 +1,1 @@
-"""Test suite for PostgreSQL Manager.""" 
+"""Test suite for PostgreSQL Manager."""

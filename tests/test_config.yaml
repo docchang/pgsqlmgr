@@ -1,0 +1,23 @@
+hosts:
+  local:
+    description: Local PostgreSQL instance
+    port: 5432
+    type: local
+    superuser: docchang
+  local_target:
+    description: Local PostgreSQL target instance (same server, different naming)
+    port: 5432
+    type: local
+    superuser: docchang
+  genesis:
+    description: Genesis server via SSH
+    port: 5432
+    ssh_config: genesis
+    type: ssh
+    superuser: postgres
+  skynet:
+    description: Skynet server via SSH (keep clean)
+    port: 5432
+    ssh_config: skynet
+    type: ssh
+    superuser: postgres 

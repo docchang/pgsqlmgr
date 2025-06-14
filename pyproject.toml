@@ -6,11 +6,20 @@ build-backend = "setuptools.build_meta"
 name = "pgsql-manager"
 version = "0.1.0"
 description = "A CLI tool for managing PostgreSQL instances across local and remote environments"
-authors = [{name = "Dominic Chang"}]
+authors = [
+    {name = "Dominic Chang"}
+]
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
-keywords = ["postgresql", "database", "cli", "ssh", "sync", "management"]
+keywords = [
+    "postgresql",
+    "database", 
+    "cli",
+    "ssh",
+    "sync",
+    "management"
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -80,6 +89,8 @@ extend-exclude = '''
 [tool.ruff]
 target-version = "py310"
 line-length = 88
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -92,10 +103,13 @@ select = [
 ignore = [
     "E501",  # line too long, handled by black
     "B008",  # do not perform function calls in argument defaults
+    "B904",  # raise ... from err (too strict for CLI apps)
     "C901",  # too complex
+    "E722",  # bare except (sometimes needed for broad error handling)
+    "UP007", # Union syntax (keep compatible with older Python)
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 
 [tool.mypy]

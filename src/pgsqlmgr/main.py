@@ -1,23 +1,33 @@
 """Main CLI entry point for PostgreSQL Manager."""
 
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from typing import Optional
-from pathlib import Path
 
 from . import __version__
 from .config import (
-    load_config,
+    DEFAULT_CONFIG_FILE,
+    HostType,
     create_sample_config,
     get_host_config,
-    list_hosts as get_host_list,
-    DEFAULT_CONFIG_FILE,
+    load_config,
     validate_config_file,
 )
-from .db import PostgreSQLManager
+from .config import list_hosts as get_host_list
+from .db import DatabaseManager, PostgreSQLManager
+from .listing import (
+    PostgreSQLLister,
+    display_databases,
+    display_table_preview,
+    display_tables,
+    display_users,
+)
 from .sync import DatabaseSyncManager
 
 # Initialize console for rich output
@@ -49,7 +59,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
-    version: Optional[bool] = typer.Option(
+    version: bool | None = typer.Option(
         None,
         "--version",
         "-v",
@@ -60,7 +70,7 @@ def main(
 ) -> None:
     """
     PostgreSQL Manager - A CLI tool for managing PostgreSQL instances.
-    
+
     Manage PostgreSQL instances across local and remote (SSH) environments
     with seamless database synchronization capabilities.
     """
@@ -69,7 +79,7 @@ def main(
 
 @app.command()
 def init_config(
-    config_path: Optional[str] = typer.Option(
+    config_path: str | None = typer.Option(
         None,
         "--config",
         "-c",
@@ -89,7 +99,7 @@ def init_config(
 
 @app.command()
 def list_hosts(
-    config_path: Optional[str] = typer.Option(
+    config_path: str | None = typer.Option(
         None,
         "--config",
         "-c",
@@ -100,36 +110,36 @@ def list_hosts(
     try:
         path = Path(config_path) if config_path else None
         hosts = get_host_list(path)
-        
+
         if not hosts:
             console.print("[yellow]No hosts configured[/yellow]")
-            console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a sample configuration")
+            console.print("Run [bold]pgsqlmgr init-config[/bold] to create a sample configuration")
             return
-        
+
         table = Table(title="Configured Hosts")
         table.add_column("Host Name", style="cyan", no_wrap=True)
         table.add_column("Type", style="magenta")
         table.add_column("Connection", style="green")
         table.add_column("Description", style="white")
-        
+
         config = load_config(path)
         for host_name in hosts:
             host_config = config.hosts[host_name]
-            if host_config.type == "local":
+            if host_config.type == HostType.LOCAL:
                 connection = f"{host_config.host}:{host_config.port}"
-            elif host_config.type == "ssh":
+            elif host_config.type == HostType.SSH:
                 connection = f"ssh {host_config.ssh_config} → {host_config.host}:{host_config.port}"
             else:
                 connection = host_config.provider if hasattr(host_config, 'provider') else "unknown"
-            
+
             description = host_config.description or ""
-            table.add_row(host_name, host_config.type, connection, description)
-        
+            table.add_row(host_name, host_config.type.value, connection, description)
+
         console.print(table)
-        
+
     except FileNotFoundError:
         console.print("[red]❌ Configuration file not found[/red]")
-        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        console.print("Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]❌ Error loading configuration: {e}[/red]")
@@ -139,7 +149,7 @@ def list_hosts(
 @app.command()
 def show_config(
     host: str,
-    config_path: Optional[str] = typer.Option(
+    config_path: str | None = typer.Option(
         None,
         "--config",
         "-c",
@@ -150,40 +160,46 @@ def show_config(
     try:
         path = Path(config_path) if config_path else None
         host_config = get_host_config(host, path)
-        
+
         # Create a panel with host configuration
         config_text = f"[bold]Host:[/bold] {host}\n"
-        config_text += f"[bold]Type:[/bold] {host_config.type}\n"
-        
-        if host_config.type == "local":
+        config_text += f"[bold]Type:[/bold] {host_config.type.value}\n"
+
+        if host_config.type == HostType.LOCAL:
             config_text += f"[bold]Host:[/bold] {host_config.host}\n"
             config_text += f"[bold]Port:[/bold] {host_config.port}\n"
-            config_text += f"[bold]User:[/bold] {host_config.user}\n"
+            config_text += f"[bold]Superuser:[/bold] {host_config.superuser}\n"
             config_text += f"[bold]Password:[/bold] {'***' if host_config.password else 'Not set'}\n"
-            
-        elif host_config.type == "ssh":
+
+        elif host_config.type == HostType.SSH:
             config_text += f"[bold]SSH Config:[/bold] {host_config.ssh_config}\n"
             config_text += f"[bold]SSH Command:[/bold] ssh {host_config.ssh_config}\n"
             config_text += f"[bold]PG Host:[/bold] {host_config.host}\n"
             config_text += f"[bold]PG Port:[/bold] {host_config.port}\n"
-            config_text += f"[bold]PG User:[/bold] {host_config.user}\n"
+            config_text += f"[bold]PG Superuser:[/bold] {host_config.superuser}\n"
             config_text += f"[bold]PG Password:[/bold] {'***' if host_config.password else 'Not set'}\n"
-            
-        elif host_config.type == "cloud":
+
+        elif host_config.type == HostType.CLOUD:
             config_text += f"[bold]Provider:[/bold] {host_config.provider}\n"
-            config_text += f"[bold]Connection String:[/bold] {'***' if host_config.connection_string else 'Not set'}\n"
-        
+            if host_config.connection_string:
+                config_text += "[bold]Connection String:[/bold] ***\n"
+            else:
+                config_text += f"[bold]Host:[/bold] {host_config.host}\n"
+                config_text += f"[bold]Port:[/bold] {host_config.port}\n"
+                config_text += f"[bold]Superuser:[/bold] {host_config.superuser}\n"
+                config_text += f"[bold]Password:[/bold] {'***' if host_config.password else 'Not set'}\n"
+
         if host_config.description:
             config_text += f"[bold]Description:[/bold] {host_config.description}\n"
-        
+
         console.print(Panel(config_text, title=f"Configuration for '{host}'", border_style="blue"))
-        
+
     except KeyError as e:
         console.print(f"[red]❌ {e}[/red]")
         raise typer.Exit(1)
     except FileNotFoundError:
         console.print("[red]❌ Configuration file not found[/red]")
-        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        console.print("Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]❌ Error loading configuration: {e}[/red]")
@@ -193,7 +209,7 @@ def show_config(
 @app.command()
 def check_install(
     host: str,
-    config_path: Optional[str] = typer.Option(
+    config_path: str | None = typer.Option(
         None,
         "--config",
         "-c",
@@ -204,13 +220,13 @@ def check_install(
     try:
         path = Path(config_path) if config_path else None
         host_config = get_host_config(host, path)
-        
+
         console.print(f"[blue]🔍 Checking PostgreSQL installation on '{host}'...[/blue]")
-        
+
         # Create PostgreSQL manager and check installation
         pg_manager = PostgreSQLManager(host_config)
         is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
-        
+
         if is_installed:
             console.print(Panel(
                 f"✅ {status_msg}\n[bold]Version:[/bold] {version_info}",
@@ -218,11 +234,11 @@ def check_install(
                 title_align="left",
                 style="green"
             ))
-            
+
             # Also check service status
-            console.print(f"[blue]🔍 Checking PostgreSQL service status...[/blue]")
+            console.print("[blue]🔍 Checking PostgreSQL service status...[/blue]")
             is_running, service_msg = pg_manager.check_service_status()
-            
+
             if is_running:
                 console.print(Panel(
                     f"✅ {service_msg}",
@@ -246,13 +262,13 @@ def check_install(
                 style="red"
             ))
             console.print(f"[yellow]💡 To install PostgreSQL, run: [bold]pgsqlmgr install {host}[/bold][/yellow]")
-        
+
     except KeyError as e:
         console.print(f"[red]❌ {e}[/red]")
         raise typer.Exit(1)
     except FileNotFoundError:
         console.print("[red]❌ Configuration file not found[/red]")
-        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        console.print("Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]❌ Error checking installation: {e}[/red]")
@@ -262,7 +278,7 @@ def check_install(
 @app.command()
 def install(
     host: str,
-    config_path: Optional[str] = typer.Option(
+    config_path: str | None = typer.Option(
         None,
         "--config",
         "-c",
@@ -279,12 +295,12 @@ def install(
     try:
         path = Path(config_path) if config_path else None
         host_config = get_host_config(host, path)
-        
+
         console.print(f"[blue]🔧 Installing PostgreSQL on '{host}'...[/blue]")
-        
+
         # Create PostgreSQL manager
         pg_manager = PostgreSQLManager(host_config)
-        
+
         # Check if already installed (unless force is used)
         if not force:
             is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
@@ -297,10 +313,10 @@ def install(
                 ))
                 console.print("[yellow]💡 Use --force to reinstall or run check-install to verify[/yellow]")
                 return
-        
+
         # Proceed with installation
         success, message = pg_manager.install_postgresql()
-        
+
         if success:
             console.print(Panel(
                 f"✅ {message}",
@@ -308,11 +324,11 @@ def install(
                 title_align="left",
                 style="green"
             ))
-            
+
             # Verify installation worked
-            console.print(f"[blue]🔍 Verifying installation...[/blue]")
+            console.print("[blue]🔍 Verifying installation...[/blue]")
             is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
-            
+
             if is_installed:
                 console.print(f"[green]✅ Verification successful: {version_info}[/green]")
             else:
@@ -325,13 +341,13 @@ def install(
                 style="red"
             ))
             raise typer.Exit(1)
-        
+
     except KeyError as e:
         console.print(f"[red]❌ {e}[/red]")
         raise typer.Exit(1)
     except FileNotFoundError:
         console.print("[red]❌ Configuration file not found[/red]")
-        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        console.print("Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]❌ Error during installation: {e}[/red]")
@@ -341,7 +357,7 @@ def install(
 @app.command()
 def start_service(
     host: str,
-    config_path: Optional[str] = typer.Option(
+    config_path: str | None = typer.Option(
         None,
         "--config",
         "-c",
@@ -352,13 +368,13 @@ def start_service(
     try:
         path = Path(config_path) if config_path else None
         host_config = get_host_config(host, path)
-        
+
         console.print(f"[blue]🚀 Starting PostgreSQL service on '{host}'...[/blue]")
-        
+
         # Create PostgreSQL manager and start service
         pg_manager = PostgreSQLManager(host_config)
         success, message = pg_manager.start_service()
-        
+
         if success:
             console.print(Panel(
                 f"✅ {message}",
@@ -374,13 +390,13 @@ def start_service(
                 style="red"
             ))
             raise typer.Exit(1)
-        
+
     except KeyError as e:
         console.print(f"[red]❌ {e}[/red]")
         raise typer.Exit(1)
     except FileNotFoundError:
         console.print("[red]❌ Configuration file not found[/red]")
-        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        console.print("Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]❌ Error starting service: {e}[/red]")
@@ -392,7 +408,7 @@ def sync_db(
     source_host: str,
     database_name: str,
     destination_host: str,
-    config_path: Optional[str] = typer.Option(
+    config_path: str | None = typer.Option(
         None,
         "--config",
         "-c",
@@ -413,6 +429,11 @@ def sync_db(
         "--schema-only",
         help="Sync only schema (no data)"
     ),
+    auto_install: bool = typer.Option(
+        False,
+        "--auto-install",
+        help="Automatically install PostgreSQL if missing on destination"
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -425,18 +446,18 @@ def sync_db(
         if data_only and schema_only:
             console.print("[red]❌ --data-only and --schema-only are mutually exclusive[/red]")
             raise typer.Exit(1)
-        
+
         path = Path(config_path) if config_path else None
-        
+
         # Get source and destination configurations
         source_config = get_host_config(source_host, path)
         dest_config = get_host_config(destination_host, path)
-        
+
         if dry_run:
-            console.print(f"[blue]🔍 Dry run: Database sync simulation[/blue]")
+            console.print("[blue]🔍 Dry run: Database sync simulation[/blue]")
             console.print(f"[blue]   Source: {source_host} → Database: {database_name}[/blue]")
             console.print(f"[blue]   Destination: {destination_host}[/blue]")
-            
+
             options = []
             if drop_existing:
                 options.append("Drop existing database")
@@ -446,29 +467,33 @@ def sync_db(
                 options.append("Schema only")
             else:
                 options.append("Full sync (schema + data)")
-            
+
+            if auto_install:
+                options.append("Auto-install PostgreSQL if missing")
+
             console.print(f"[blue]   Options: {', '.join(options)}[/blue]")
             console.print("[yellow]💡 Remove --dry-run to execute the sync[/yellow]")
             return
-        
+
         # Create sync manager
         sync_manager = DatabaseSyncManager(source_config, dest_config)
-        
+
         # Check if source and destination are the same
         if source_host == destination_host:
             console.print("[red]❌ Source and destination hosts cannot be the same[/red]")
             raise typer.Exit(1)
-        
+
         # Perform the sync
-        console.print(f"[blue]🚀 Starting database synchronization...[/blue]")
-        
+        console.print("[blue]🚀 Starting database synchronization...[/blue]")
+
         success, message = sync_manager.sync_database(
             database_name=database_name,
             drop_existing=drop_existing,
             data_only=data_only,
-            schema_only=schema_only
+            schema_only=schema_only,
+            auto_install=auto_install
         )
-        
+
         if success:
             console.print(f"[green]✅ {message}[/green]")
         else:
@@ -478,13 +503,13 @@ def sync_db(
                 style="red"
             ))
             raise typer.Exit(1)
-        
+
     except KeyError as e:
         console.print(f"[red]❌ {e}[/red]")
         raise typer.Exit(1)
     except FileNotFoundError:
         console.print("[red]❌ Configuration file not found[/red]")
-        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        console.print("Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]❌ Error during sync: {e}[/red]")
@@ -492,10 +517,157 @@ def sync_db(
 
 
 @app.command()
-def delete_db(host: str, database: str) -> None:
-    """Delete a database from a host."""
-    console.print(f"[yellow]⚠️  Not implemented yet[/yellow]")
-    console.print(f"This command will delete database [blue]{database}[/blue] from [blue]{host}[/blue]")
+def delete_db(
+    host: str = typer.Argument(..., help="Host name from configuration"),
+    database: str = typer.Argument(..., help="Database name to delete"),
+    config_path: str | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file"
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force deletion without confirmation prompt"
+    ),
+    backup: bool = typer.Option(
+        False,
+        "--backup",
+        "-b",
+        help="Create backup before deletion"
+    ),
+    backup_path: str | None = typer.Option(
+        None,
+        "--backup-path",
+        help="Path to save backup file (default: current directory)"
+    )
+) -> None:
+    """Delete a database from a host.
+
+    This command will permanently delete the specified database.
+    Use --backup to create a backup before deletion.
+    Use --force to skip confirmation prompts.
+    """
+    try:
+        path = Path(config_path) if config_path else None
+        host_config = get_host_config(host, path)
+
+        # Create database manager
+        db_manager = DatabaseManager(host_config)
+
+        console.print("[red]🗑️  Database Deletion Request[/red]")
+        console.print(f"[blue]   Host: {host}[/blue]")
+        console.print(f"[blue]   Database: {database}[/blue]")
+
+        # Get database information for confirmation
+        console.print("[blue]🔍 Gathering database information...[/blue]")
+        db_info = db_manager.get_database_info(database)
+
+        if not db_info.get("exists", False):
+            if "error" in db_info:
+                console.print(f"[yellow]⚠️  Warning: Could not verify database existence: {db_info['error']}[/yellow]")
+            else:
+                console.print(f"[yellow]⚠️  Database '{database}' does not exist on host '{host}'[/yellow]")
+                console.print("[green]✅ Nothing to delete[/green]")
+                return
+
+        # Display database information
+        if db_info.get("exists"):
+            console.print("\n[bold cyan]📊 Database Information:[/bold cyan]")
+
+            info_table = Table(show_header=False, box=None, padding=(0, 2))
+            info_table.add_column("Property", style="cyan")
+            info_table.add_column("Value", style="white")
+
+            info_table.add_row("Name", db_info.get("name", "Unknown"))
+            info_table.add_row("Owner", db_info.get("owner", "Unknown"))
+            info_table.add_row("Size", db_info.get("size", "Unknown"))
+            info_table.add_row("Encoding", db_info.get("encoding", "Unknown"))
+            info_table.add_row("Active Connections", db_info.get("active_connections", "Unknown"))
+
+            console.print(info_table)
+
+        # Create backup if requested
+        backup_file = None
+        if backup:
+            console.print("\n[blue]💾 Creating backup before deletion...[/blue]")
+
+            # Determine backup file path
+            if backup_path:
+                backup_dir = Path(backup_path)
+                if backup_dir.is_dir():
+                    backup_file = backup_dir / f"{database}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql"
+                else:
+                    backup_file = Path(backup_path)
+            else:
+                backup_file = Path(f"{database}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.sql")
+
+            # Create backup using sync functionality (reuse existing dump logic)
+            from .sync import DatabaseSyncManager
+            sync_manager = DatabaseSyncManager(host_config, host_config)  # Same source and dest for backup
+
+            try:
+                success, message = sync_manager._create_dump(database, backup_file)
+                if success:
+                    console.print(f"[green]✅ Backup created: {backup_file}[/green]")
+                else:
+                    console.print(f"[red]❌ Backup failed: {message}[/red]")
+                    if not force:
+                        console.print("[red]Aborting deletion due to backup failure[/red]")
+                        raise typer.Exit(1)
+                    else:
+                        console.print("[yellow]⚠️  Continuing with deletion despite backup failure (--force used)[/yellow]")
+            except Exception as e:
+                console.print(f"[red]❌ Backup error: {e}[/red]")
+                if not force:
+                    console.print("[red]Aborting deletion due to backup error[/red]")
+                    raise typer.Exit(1)
+                else:
+                    console.print("[yellow]⚠️  Continuing with deletion despite backup error (--force used)[/yellow]")
+
+        # Confirmation prompt (unless --force is used)
+        if not force:
+            console.print(f"\n[bold red]⚠️  WARNING: This will permanently delete database '{database}' from host '{host}'![/bold red]")
+            if backup_file:
+                console.print(f"[green]💾 Backup saved to: {backup_file}[/green]")
+            console.print("[red]This action cannot be undone![/red]")
+
+            confirm = typer.confirm(
+                f"\nAre you sure you want to delete database '{database}'?",
+                default=False
+            )
+
+            if not confirm:
+                console.print("[yellow]❌ Database deletion cancelled[/yellow]")
+                return
+
+        # Perform the deletion
+        console.print(f"\n[red]🗑️  Deleting database '{database}'...[/red]")
+
+        success, message = db_manager.drop_database(database, force=True)
+
+        if success:
+            console.print(Panel(
+                f"✅ Database '{database}' deleted successfully!",
+                title="Deletion Complete",
+                style="green"
+            ))
+
+            if backup_file and backup_file.exists():
+                console.print(f"[blue]💾 Backup available at: {backup_file}[/blue]")
+        else:
+            console.print(Panel(
+                f"❌ Failed to delete database: {message}",
+                title="Deletion Failed",
+                style="red"
+            ))
+            raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -507,7 +679,7 @@ def generate_pgpass() -> None:
 
 @app.command()
 def validate_config(
-    config_path: Optional[str] = typer.Option(
+    config_path: str | None = typer.Option(
         None,
         "--config",
         "-c",
@@ -518,9 +690,9 @@ def validate_config(
     try:
         path = Path(config_path) if config_path else None
         is_valid, errors = validate_config_file(path)
-        
+
         config_file_path = path or DEFAULT_CONFIG_FILE
-        
+
         if is_valid:
             console.print(Panel(
                 Text("✅ Configuration is valid!", style="bold green"),
@@ -528,15 +700,15 @@ def validate_config(
                 title_align="left",
                 style="green"
             ))
-            
+
             # Show summary of valid configuration
             try:
                 config = load_config(path)
                 host_count = len(config.hosts)
-                local_count = sum(1 for host in config.hosts.values() if host.type == "local")
-                ssh_count = sum(1 for host in config.hosts.values() if host.type == "ssh")
-                cloud_count = sum(1 for host in config.hosts.values() if host.type == "cloud")
-                
+                local_count = sum(1 for host in config.hosts.values() if host.type == HostType.LOCAL)
+                ssh_count = sum(1 for host in config.hosts.values() if host.type == HostType.SSH)
+                cloud_count = sum(1 for host in config.hosts.values() if host.type == HostType.CLOUD)
+
                 summary_text = f"Found {host_count} configured host(s):"
                 if local_count > 0:
                     summary_text += f"\n  • {local_count} local host(s)"
@@ -544,14 +716,14 @@ def validate_config(
                     summary_text += f"\n  • {ssh_count} SSH host(s)"
                 if cloud_count > 0:
                     summary_text += f"\n  • {cloud_count} cloud host(s)"
-                
+
                 console.print(Panel(
                     summary_text,
                     title="Configuration Summary",
                     title_align="left",
                     style="blue"
                 ))
-                
+
             except Exception as e:
                 console.print(f"[yellow]Note: Could not load config summary: {e}[/yellow]")
         else:
@@ -561,73 +733,177 @@ def validate_config(
                 title_align="left",
                 style="red"
             ))
-            
+
             console.print("\n[bold red]Errors found:[/bold red]")
             for i, error in enumerate(errors, 1):
                 console.print(f"  {i}. {error}")
-            
-            console.print(f"\n[yellow]Fix these errors and run [bold]pgsqlmgr validate-config[/bold] again[/yellow]")
+
+            console.print("\n[yellow]Fix these errors and run [bold]pgsqlmgr validate-config[/bold] again[/yellow]")
             raise typer.Exit(1)
-            
+
     except Exception as e:
         console.print(f"[red]❌ Error validating configuration: {e}[/red]")
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command("list-databases")
 def list_databases(
-    host: str,
-    config_path: Optional[str] = typer.Option(
-        None,
-        "--config",
-        "-c",
-        help="Path to configuration file"
-    )
-) -> None:
-    """List databases on a host."""
+    host: str = typer.Argument(..., help="Host name from configuration"),
+    include_system: bool = typer.Option(False, "--include-system", "-s", help="Include system databases"),
+    config_file: Path | None = typer.Option(None, "--config", "-c", help="Path to configuration file")
+):
+    """List databases on a PostgreSQL host."""
     try:
-        path = Path(config_path) if config_path else None
-        host_config = get_host_config(host, path)
-        
-        console.print(f"[blue]📋 Listing databases on '{host}'...[/blue]")
-        
-        # Create sync manager to use database listing functionality
-        sync_manager = DatabaseSyncManager(host_config, host_config)  # Same host for both
-        success, databases, error_msg = sync_manager.list_databases(host_config)
-        
+        host_config = get_host_config(host, config_file)
+        lister = PostgreSQLLister(host_config)
+
+        console.print(f"[blue]📊 Listing databases on {host}...[/blue]")
+
+        success, databases, error = lister.list_databases(include_system)
+
         if success:
-            if databases:
-                table = Table(title=f"Databases on {host}")
-                table.add_column("Database Name", style="cyan", no_wrap=True)
-                table.add_column("Status", style="green")
-                
-                for db_name in databases:
-                    table.add_row(db_name, "Available")
-                
-                console.print(table)
-                console.print(f"[green]✅ Found {len(databases)} database(s)[/green]")
-            else:
-                console.print(f"[yellow]⚠️  No user databases found on {host}[/yellow]")
-                console.print("[yellow]   (System databases like 'postgres' and 'template*' are hidden)[/yellow]")
+            display_databases(databases, host, include_system)
         else:
-            console.print(Panel(
-                f"❌ {error_msg}",
-                title=f"Database List Failed: {host}",
-                style="red"
-            ))
+            console.print(f"[red]❌ Failed to list databases: {error}[/red]")
             raise typer.Exit(1)
-        
-    except KeyError as e:
-        console.print(f"[red]❌ {e}[/red]")
-        raise typer.Exit(1)
-    except FileNotFoundError:
-        console.print("[red]❌ Configuration file not found[/red]")
-        console.print(f"Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
-        raise typer.Exit(1)
+
     except Exception as e:
-        console.print(f"[red]❌ Error listing databases: {e}[/red]")
+        console.print(f"[red]❌ Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("list-tables")
+def list_tables(
+    host: str = typer.Argument(..., help="Host name from configuration"),
+    database: str | None = typer.Option(None, "--database", "-d", help="Specific database to list tables for"),
+    include_system: bool = typer.Option(False, "--include-system", "-s", help="Include system tables"),
+    preview: bool = typer.Option(False, "--preview", "-p", help="Show table content preview (10 records per table)"),
+    config_file: Path | None = typer.Option(None, "--config", "-c", help="Path to configuration file")
+):
+    """List tables on a PostgreSQL host.
+
+    Use --preview to show table content preview (10 records per table).
+    """
+    try:
+        host_config = get_host_config(host, config_file)
+        lister = PostgreSQLLister(host_config)
+
+        if database:
+            console.print(f"[blue]📋 Listing tables in database '{database}' on {host}...[/blue]")
+            context = f"in database '{database}' on {host}"
+        else:
+            console.print(f"[blue]📋 Listing tables in all user databases on {host}...[/blue]")
+            context = f"in all user databases on {host}"
+
+        success, tables, error = lister.list_tables(database, include_system)
+
+        if success:
+            display_tables(tables, context)
+
+            # Add table content previews if requested
+            if preview:
+                preview_limit = 10  # Fixed at 10 records
+                console.print(f"\n[bold cyan]🔍 Table Content Previews (showing up to {preview_limit} records per table):[/bold cyan]")
+
+                # Group tables by database if we're listing across multiple databases
+                if database:
+                    # Single database - preview all tables
+                    _preview_tables_for_database(lister, tables, database, preview_limit)
+                else:
+                    # Multiple databases - group by database
+                    tables_by_db = {}
+                    for table in tables:
+                        db_name = table.get('database', 'unknown')
+                        if db_name not in tables_by_db:
+                            tables_by_db[db_name] = []
+                        tables_by_db[db_name].append(table)
+
+                    for db_name, db_tables in tables_by_db.items():
+                        console.print(f"\n[bold yellow]Database: {db_name}[/bold yellow]")
+                        _preview_tables_for_database(lister, db_tables, db_name, preview_limit)
+        else:
+            console.print(f"[red]❌ Failed to list tables: {error}[/red]")
+            raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+def _preview_tables_for_database(lister: PostgreSQLLister, tables: list[dict[str, Any]], database_name: str, limit: int):
+    """Helper function to preview tables for a specific database."""
+    for table in tables:
+        table_name = table.get('table', 'unknown')
+        schema_name = table.get('schema', 'public')
+
+        console.print(f"\n[dim]Previewing {schema_name}.{table_name}...[/dim]")
+
+        success, data_rows, columns, error = lister.preview_table_content(
+            database_name, table_name, schema_name, limit
+        )
+
+        if success:
+            if data_rows:
+                display_table_preview(data_rows, columns, table_name, database_name, schema_name, limit)
+            else:
+                console.print(f"[yellow]  📭 Table {schema_name}.{table_name} is empty[/yellow]")
+        else:
+            console.print(f"[red]  ❌ Could not preview {schema_name}.{table_name}: {error}[/red]")
+
+
+@app.command("list-users")
+def list_users(
+    host: str = typer.Argument(..., help="Host name from configuration"),
+    config_file: Path | None = typer.Option(None, "--config", "-c", help="Path to configuration file")
+):
+    """List PostgreSQL users/roles on a host."""
+    try:
+        host_config = get_host_config(host, config_file)
+        lister = PostgreSQLLister(host_config)
+
+        console.print(f"[blue]👥 Listing users on {host}...[/blue]")
+
+        success, users, error = lister.list_users()
+
+        if success:
+            display_users(users, host)
+        else:
+            console.print(f"[red]❌ Failed to list users: {error}[/red]")
+            raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("preview-table")
+def preview_table(
+    host: str = typer.Argument(..., help="Host name from configuration"),
+    database: str = typer.Argument(..., help="Database name"),
+    table: str = typer.Argument(..., help="Table name to preview"),
+    schema: str = typer.Option("public", "--schema", "-s", help="Schema name (default: public)"),
+    config_file: Path | None = typer.Option(None, "--config", "-c", help="Path to configuration file")
+):
+    """Preview table content with sample data (10 records)."""
+    try:
+        host_config = get_host_config(host, config_file)
+        lister = PostgreSQLLister(host_config)
+
+        console.print(f"[blue]🔍 Previewing table '{schema}.{table}' in database '{database}' on {host}...[/blue]")
+
+        limit = 10  # Fixed at 10 records
+        success, data_rows, columns, error = lister.preview_table_content(database, table, schema, limit)
+
+        if success:
+            display_table_preview(data_rows, columns, table, database, schema, limit)
+        else:
+            console.print(f"[red]❌ Failed to preview table: {error}[/red]")
+            raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"[red]❌ Error: {e}[/red]")
         raise typer.Exit(1)
 
 
 if __name__ == "__main__":
-    app() 
+    app()

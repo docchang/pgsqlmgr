@@ -7,4 +7,4 @@ __description__ = "A CLI tool for managing PostgreSQL instances across local and
 
 # Main functionality is available but not automatically imported
 # Use: from pgsqlmgr.main import main
-__all__ = [] 
+__all__ = []

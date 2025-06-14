@@ -8,26 +8,41 @@ PostgreSQL Manager (`pgsqlmgr`) is a Python-based command-line tool designed to 
 
 ## ✨ Features
 
-### Phase 1 (v1.0) - Core Functionality
+### ✅ Implemented Features (Current)
 - 🔧 **Installation Management**: Check and install PostgreSQL on local and remote (SSH) hosts
 - 🔄 **Database Synchronization**: Seamless sync between local and SSH instances using `pg_dump`/`pg_restore`
-- ⚙️ **Configuration Management**: Unified YAML configuration for all your PostgreSQL hosts
-- 🔐 **Credential Automation**: Automatic `.pgpass` file generation and management
-- 🗑️ **Safe Database Deletion**: Controlled database removal with confirmation prompts
-- 🎨 **Rich CLI Interface**: Beautiful command-line interface with progress indicators
+- 🗑️ **Database Deletion**: Safe database deletion with confirmation prompts and backup options
+- ⚙️ **Configuration Management**: Unified YAML configuration with inheritance-based host types
+- 📊 **Database Listing**: List all databases with sizes, owners, and access privileges
+- 📋 **Table Listing**: List tables across databases with schema, size, and row count information
+- 🔍 **Table Content Preview**: View actual table data (10 records per table, integrated with table listing)
+- 👥 **User Management**: List PostgreSQL users/roles with detailed permission information
+- 🎨 **Rich CLI Interface**: Beautiful command-line interface with colored tables and progress indicators
+- 🔐 **Credential Management**: Support for password-based authentication
+- 🏗️ **Type-Safe Configuration**: Enum-based host types with inheritance for maintainability
+- ✅ **Configuration Validation**: Comprehensive config file validation with detailed error reporting
 
 ### Phase 2 (v2.0) - Future Enhancements
 - ☁️ **Cloud Integration**: Support for Supabase, AWS RDS, and other cloud providers
 - 🚀 **Advanced Sync Options**: Incremental sync, schema-only sync, and more
 - 📊 **Monitoring Dashboard**: Optional web interface for database monitoring
+- 🔐 **Advanced Security**: `.pgpass` file generation and SSH key management
 
 ## 🏗️ Project Status
 
-**Current Status**: 🚧 **In Development**
+**Current Status**: 🚀 **Active Development - Core Features Complete**
 
-This project is currently in the design and early development phase. We're following modern Python packaging standards and building a robust foundation for PostgreSQL management.
+The project has implemented all core database management functionality including listing, synchronization, and deletion with comprehensive testing coverage (133 tests passing). The foundation is solid with modern Python packaging standards and robust error handling.
 
-**Roadmap**: See our [Milestones](docs/design/PostgreSQL%20Manager%20Milestones.md) for detailed development timeline.
+**Recent Additions**:
+- ✅ **Database Deletion Functionality**: Safe deletion with confirmation prompts and backup options
+- ✅ Complete listing functionality (databases, tables, users)
+- ✅ Table content preview with intelligent column styling
+- ✅ Simple preview option (--preview for 10 records)
+- ✅ Rich table displays with color coding
+- ✅ Inheritance-based configuration system
+- ✅ Type-safe enum system for host types
+- ✅ Comprehensive test suite (133 tests passing)
 
 ## 🚀 Installation
 
@@ -38,12 +53,36 @@ pgsqlmgr --help
 ```
 
 ### Developers
+
+#### Standard Setup
 ```bash
 git clone https://github.com/docchang/pgsqlmgr.git
 cd pgsqlmgr
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e . --use-pep517
+pgsqlmgr --help
+```
+
+#### Apple Silicon (M1/M2/M3) Setup
+If you encounter cryptography/hashlib errors on Apple Silicon:
+
+**Quick Setup (Recommended)**:
+```bash
+git clone https://github.com/docchang/pgsqlmgr.git
+cd pgsqlmgr
+chmod +x setup_arm64.sh
+./setup_arm64.sh
+```
+
+**Manual Setup**:
+```bash
+git clone https://github.com/docchang/pgsqlmgr.git
+cd pgsqlmgr
+source simple-fix/setup_arm64_homebrew.sh
+create_arm64_venv .venv
+source .venv/bin/activate
+pip install -e .
 pgsqlmgr --help
 ```
 
@@ -76,9 +115,11 @@ pgsqlmgr --help
    pgsqlmgr list-hosts
    ```
 
-5. **View host details**:
+5. **Explore your databases**:
    ```bash
-   pgsqlmgr show-config production
+   pgsqlmgr list-databases localhost
+   pgsqlmgr list-tables localhost --database myapp_db
+   pgsqlmgr list-users localhost
    ```
 
 ## 💻 Usage
@@ -115,7 +156,7 @@ hosts:
     type: local
     host: localhost
     port: 5432
-    user: postgres
+    superuser: postgres
     password: your_password_here
     description: Local PostgreSQL instance
 
@@ -124,7 +165,7 @@ hosts:
     ssh_config: production  # References ~/.ssh/config entry
     host: localhost
     port: 5432
-    user: postgres
+    superuser: postgres
     password: production_password
     description: Production server via SSH
 
@@ -133,14 +174,22 @@ hosts:
     ssh_config: staging  # References ~/.ssh/config entry
     host: localhost
     port: 5432
-    user: admin
+    superuser: admin
     password: staging_password
     description: Staging server via SSH
+
+  cloud_db:
+    type: cloud
+    host: db.example.com
+    port: 5432
+    superuser: admin
+    password: cloud_password
+    description: Cloud PostgreSQL instance
 ```
 
 ### Available Commands
 
-#### Core Commands
+#### Core Management Commands
 ```bash
 # Show help and available commands
 pgsqlmgr --help
@@ -157,7 +206,81 @@ pgsqlmgr list-hosts
 # Show detailed configuration for a specific host
 pgsqlmgr show-config <host_name>
 pgsqlmgr show-config production
-pgsqlmgr show-config local
+
+# Validate configuration file
+pgsqlmgr validate-config
+```
+
+#### Database Listing Commands
+```bash
+# List user databases (excludes system databases)
+pgsqlmgr list-databases localhost
+
+# List all databases including system databases
+pgsqlmgr list-databases localhost --include-system
+
+# List tables in a specific database
+pgsqlmgr list-tables localhost --database myapp_db
+
+# List tables with content preview (10 records per table)
+pgsqlmgr list-tables localhost --database myapp_db --preview
+
+# List tables across all user databases with preview
+pgsqlmgr list-tables localhost --preview
+
+# List tables including system tables
+pgsqlmgr list-tables localhost --include-system
+
+# Preview specific table content (standalone command, 10 records)
+pgsqlmgr preview-table localhost myapp_db users
+
+# List PostgreSQL users and their permissions
+pgsqlmgr list-users localhost
+```
+
+#### Installation & Service Commands
+```bash
+# Check PostgreSQL installation status
+pgsqlmgr check-install production
+
+# Install PostgreSQL on a host
+pgsqlmgr install production
+
+# Start PostgreSQL service
+pgsqlmgr start-service production
+```
+
+#### Database Synchronization Commands
+```bash
+# Sync database between hosts
+pgsqlmgr sync-db source_host database_name destination_host
+
+# Sync with options
+pgsqlmgr sync-db local myapp_db production --drop-existing --auto-install
+
+# Schema-only sync
+pgsqlmgr sync-db local myapp_db staging --schema-only
+
+# Data-only sync
+pgsqlmgr sync-db local myapp_db staging --data-only
+```
+
+#### Database Deletion Commands
+```bash
+# Delete database with confirmation prompt
+pgsqlmgr delete-db localhost old_database
+
+# Delete database with backup before deletion
+pgsqlmgr delete-db localhost old_database --backup
+
+# Delete database with custom backup location
+pgsqlmgr delete-db localhost old_database --backup --backup-path /backups/
+
+# Force delete without confirmation (for automation)
+pgsqlmgr delete-db localhost old_database --force
+
+# Delete database on SSH host with backup
+pgsqlmgr delete-db production old_database --backup
 ```
 
 #### Command Options
@@ -168,10 +291,83 @@ pgsqlmgr --config /path/to/config.yaml list-hosts
 
 # Get help for specific commands
 pgsqlmgr show-config --help
-pgsqlmgr list-hosts --help
+pgsqlmgr list-databases --help
 ```
 
 #### Example Output
+
+**List Databases:**
+```bash
+$ pgsqlmgr list-databases localhost
+📊 Listing databases on localhost...
+                           Databases on localhost                            
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┓
+┃ Database Name ┃ Owner     ┃ Encoding  ┃ Size    ┃ Access Privileges ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━┩
+│ myapp_db      │ postgres  │ UTF8      │ 15 MB   │ None              │
+│ analytics     │ postgres  │ UTF8      │ 128 MB  │ None              │
+│ staging_db    │ admin     │ UTF8      │ 5 MB    │ None              │
+└───────────────┴───────────┴───────────┴─────────┴───────────────────┘
+```
+
+**List Tables:**
+```bash
+$ pgsqlmgr list-tables localhost --database myapp_db
+📋 Listing tables in database 'myapp_db' on localhost...
+                    Tables in database 'myapp_db' on localhost                     
+┏━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ Schema  ┃ Table Name   ┃ Owner     ┃ Size     ┃ Est. Rows ┃
+┡━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━┩
+│ public  │ users        │ postgres  │ 1024 kB  │ 1500      │
+│ public  │ orders       │ postgres  │ 2048 kB  │ 3200      │
+│ public  │ products     │ postgres  │ 512 kB   │ 450       │
+└─────────┴──────────────┴───────────┴──────────┴───────────┘
+```
+
+**List Users:**
+```bash
+$ pgsqlmgr list-users localhost
+👥 Listing users on localhost...
+                          PostgreSQL Users on localhost                           
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
+┃ Username   ┃ Superuser  ┃ Create Roles ┃ Create DBs ┃ Can Login ┃ Connection Limit  ┃ Valid Until ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩
+│ postgres   │ ✓          │ ✓            │ ✓          │ ✓         │ Unlimited         │ Never       │
+│ app_user   │ ✗          │ ✗            │ ✗          │ ✓         │ 10                │ Never       │
+│ readonly   │ ✗          │ ✗            │ ✗          │ ✓         │ 5                 │ Never       │
+└────────────┴────────────┴──────────────┴────────────┴───────────┴───────────────────┴─────────────┘
+```
+
+**Database Deletion:**
+```bash
+$ pgsqlmgr delete-db localhost old_database --backup
+🗑️  Database Deletion Request
+   Host: localhost
+   Database: old_database
+🔍 Gathering database information...
+
+📊 Database Information:
+Name                old_database
+Owner               postgres
+Size                25 MB
+Encoding            UTF8
+Active Connections  0
+
+💾 Creating backup before deletion...
+✅ Backup created: old_database_backup_20241220_143022.sql
+
+⚠️  WARNING: This will permanently delete database 'old_database' from host 'localhost'!
+💾 Backup saved to: old_database_backup_20241220_143022.sql
+This action cannot be undone!
+
+Are you sure you want to delete database 'old_database'? [y/N]: y
+
+🗑️  Deleting database 'old_database'...
+╭─────────────────────────────────────────── Deletion Complete ────────────────────────────────────────────╮
+│ ✅ Database 'old_database' deleted successfully!                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+💾 Backup available at: old_database_backup_20241220_143022.sql
+```
 
 **List Hosts:**
 ```bash
@@ -183,56 +379,14 @@ $ pgsqlmgr list-hosts
 │ local      │ local │ localhost:5432                  │ Local PostgreSQL instance                      │
 │ production │ ssh   │ ssh production → localhost:5432 │ Production server via SSH (uses ~/.ssh/config) │
 │ staging    │ ssh   │ ssh staging → localhost:5432    │ Staging server via SSH (uses ~/.ssh/config)    │
+│ cloud_db   │ cloud │ db.example.com:5432             │ Cloud PostgreSQL instance                       │
 └────────────┴───────┴─────────────────────────────────┴────────────────────────────────────────────────┘
 ```
 
-**Show Config:**
+#### Future Commands (Coming Soon)
 ```bash
-$ pgsqlmgr show-config production
-╭─────── Host Configuration: production ────────╮
-│ Type: ssh                                      │
-│ SSH Command: ssh production                    │
-│ Database Host: localhost:5432                  │
-│ Database User: postgres                        │
-│ Description: Production server via SSH         │
-╰────────────────────────────────────────────────╯
-```
-
-**Help Output:**
-```bash
-$ pgsqlmgr --help
-
-Usage: pgsqlmgr [OPTIONS] COMMAND [ARGS]...
-
-PostgreSQL Manager - Manage PostgreSQL instances across local and remote environments
-
-Commands:
-  init-config       Initialize a sample configuration file.
-  list-hosts        List all configured PostgreSQL hosts.
-  show-config       Show configuration for a specific host.
-  check-install     Check PostgreSQL installation on a host.
-  install           Install PostgreSQL on a host.
-  sync-db           Sync a database between two hosts.
-  delete-db         Delete a database from a host.
-  generate-pgpass   Generate .pgpass file from configuration.
-```
-
-#### Future Commands (Coming in v1.0)
-```bash
-# Check PostgreSQL installation
-pgsqlmgr check-install production
-
-# Install PostgreSQL on remote host
-pgsqlmgr install production
-
-# Sync database between hosts
-pgsqlmgr sync-db local myapp_db production
-
 # Generate .pgpass file
 pgsqlmgr generate-pgpass
-
-# Delete database (with confirmation)
-pgsqlmgr delete-db staging old_db
 ```
 
 ## 🛠️ Requirements
@@ -250,6 +404,24 @@ pgsqlmgr delete-db staging old_db
 
 - [Design Document](docs/design/PostgreSQL%20Manager%20Design.md) - Technical architecture and specifications
 - [Development Milestones](docs/design/PostgreSQL%20Manager%20Milestones.md) - Detailed development roadmap
+
+## 🧪 Testing
+
+The project maintains comprehensive test coverage:
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=src/pgsqlmgr
+
+# Run specific test modules
+pytest tests/test_listing.py -v
+pytest tests/test_config.py -v
+```
+
+**Current Test Stats**: 133 tests passing, 13 skipped (integration tests)
 
 ## 🤝 Contributing
 
@@ -274,7 +446,13 @@ We welcome contributions! This project follows modern Python development practic
 pgsql-manager/
 ├── src/
 │   └── pgsqlmgr/           # Main package
-├── tests/                  # Test suite
+│       ├── config.py       # Configuration management with inheritance
+│       ├── listing.py      # Database listing functionality
+│       ├── main.py         # CLI interface
+│       ├── db.py          # Database operations
+│       ├── sync.py        # Database synchronization
+│       └── ssh.py         # SSH operations
+├── tests/                  # Comprehensive test suite
 ├── docs/                   # Documentation
 ├── pyproject.toml          # Modern Python packaging
 └── README.md               # This file
@@ -286,6 +464,8 @@ pgsql-manager/
 - **Safety**: Confirmation prompts for destructive operations
 - **Modern**: Following 2025 Python packaging best practices
 - **Reliable**: Comprehensive testing and error handling
+- **Beautiful**: Rich CLI interface with colored output
+- **Type-Safe**: Full type hints and enum-based configuration
 - **Open**: MIT licensed and open-source
 
 ## 📝 License
@@ -299,4 +479,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Note**: This project is actively under development. APIs and features may change before the v1.0 release. See our [milestones](docs/design/PostgreSQL%20Manager%20Milestones.md) for current progress. 
+**Note**: This project is actively under development with core features implemented and tested. The listing functionality is complete and ready for use. See our [milestones](docs/design/PostgreSQL%20Manager%20Milestones.md) for upcoming features. 
