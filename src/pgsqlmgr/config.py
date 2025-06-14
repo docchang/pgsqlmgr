@@ -29,7 +29,6 @@ class BaseHostConfig(BaseModel):
     host: str = "localhost"  # Default to localhost for most cases
     port: int = Field(default=5432, ge=1, le=65535)
     superuser: str  # PostgreSQL superuser account (e.g., postgres, docchang)
-    password: str | None = None
     database: str | None = None
     description: str | None = None
 
@@ -236,7 +235,6 @@ def create_sample_config(config_path: Path | None = None) -> None:
                 "host": "localhost",
                 "port": 5432,
                 "superuser": "postgres",
-                "password": "your_password_here",
                 "description": "Local PostgreSQL instance"
             },
             "genesis": {
@@ -245,7 +243,6 @@ def create_sample_config(config_path: Path | None = None) -> None:
                 "host": "localhost",
                 "port": 5432,
                 "superuser": "postgres",
-                "password": "genesis_password",
                 "description": "Genesis server via SSH"
             },
             "skynet": {
@@ -264,6 +261,20 @@ def create_sample_config(config_path: Path | None = None) -> None:
 
     console.print(f"[green]✅ Sample configuration created at: {config_path}[/green]")
     console.print("[yellow]⚠️  Please edit the configuration file to match your setup[/yellow]")
+    console.print()
+    console.print("[blue]📋 Next Steps:[/blue]")
+    console.print("1. Edit the configuration file to match your setup")
+    console.print("2. Configure SSH access in ~/.ssh/config (for SSH hosts)")
+    console.print("3. Set up PostgreSQL authentication in ~/.pgpass")
+    console.print()
+    console.print("[blue]📖 .pgpass format:[/blue]")
+    console.print("hostname:port:database:username:password")
+    console.print()
+    console.print("[blue]📖 Example .pgpass entries:[/blue]")
+    console.print("localhost:5432:*:postgres:your_local_password")
+    console.print("localhost:5433:*:postgres:your_ssh_tunnel_password")
+    console.print()
+    console.print("[red]🔒 Important:[/red] chmod 600 ~/.pgpass")
 
 
 def get_host_config(host_name: str, config_path: Path | None = None) -> HostConfig:

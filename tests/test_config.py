@@ -25,12 +25,11 @@ class TestLocalHost:
 
     def test_valid_local_host(self):
         """Test valid local host configuration."""
-        config = LocalHost(superuser="postgres", password="test123")
+        config = LocalHost(superuser="postgres")
         assert config.type == "local"
         assert config.host == "localhost"
         assert config.port == 5432
         assert config.superuser == "postgres"
-        assert config.password == "test123"
 
     def test_local_host_custom_port(self):
         """Test local host with custom port."""

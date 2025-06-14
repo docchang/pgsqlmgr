@@ -1,15 +1,35 @@
 """PostgreSQL database object listing functionality."""
 
-import os
 import subprocess
 from typing import Any
 
 from rich.console import Console
 from rich.table import Table
 
-from .config import HostConfig, HostType
+from .config import HostConfig, HostType, LocalHost, SSHHost
 
 console = Console()
+
+
+def _get_auth_help_message(host_config: HostConfig) -> str:
+    """Get helpful authentication error message with .pgpass guidance."""
+    if isinstance(host_config, LocalHost):
+        return (
+            f"\n\n💡 Authentication Help:\n"
+            f"Set up PostgreSQL authentication in ~/.pgpass:\n"
+            f"  {host_config.host}:{host_config.port}:*:{host_config.superuser}:your_password\n"
+            f"Then run: chmod 600 ~/.pgpass"
+        )
+    elif isinstance(host_config, SSHHost):
+        return (
+            f"\n\n💡 Authentication Help:\n"
+            f"For SSH connections, ensure:\n"
+            f"1. SSH access is configured in ~/.ssh/config\n"
+            f"2. PostgreSQL authentication is set up on the remote host\n"
+            f"3. The user '{host_config.superuser}' has appropriate permissions"
+        )
+    else:
+        return ""
 
 
 class PostgreSQLLister:
@@ -120,20 +140,18 @@ class PostgreSQLLister:
             "--field-separator=|"
         ]
 
-        env = os.environ.copy()
-        if self.host_config.password:
-            env["PGPASSWORD"] = self.host_config.password
-
         result = subprocess.run(
             cmd,
-            env=env,
             capture_output=True,
             text=True,
             timeout=30
         )
 
         if result.returncode != 0:
-            return False, [], f"Failed to list databases: {result.stderr}"
+            error_msg = f"Failed to list databases: {result.stderr}"
+            if "authentication failed" in result.stderr.lower() or "password" in result.stderr.lower():
+                error_msg += _get_auth_help_message(self.host_config)
+            return False, [], error_msg
 
         databases = []
         system_dbs = {'postgres', 'template0', 'template1'}
@@ -293,20 +311,18 @@ class PostgreSQLLister:
             "--command", sql_query
         ]
 
-        env = os.environ.copy()
-        if self.host_config.password:
-            env["PGPASSWORD"] = self.host_config.password
-
         result = subprocess.run(
             cmd,
-            env=env,
             capture_output=True,
             text=True,
             timeout=30
         )
 
         if result.returncode != 0:
-            return False, [], f"Query failed: {result.stderr}"
+            error_msg = f"Query failed: {result.stderr}"
+            if "authentication failed" in result.stderr.lower() or "password" in result.stderr.lower():
+                error_msg += _get_auth_help_message(self.host_config)
+            return False, [], error_msg
 
         return self._parse_query_result(result.stdout, sql_query)
 
@@ -385,11 +401,7 @@ class PostgreSQLLister:
                 "--command", f"SELECT pg_size_pretty(pg_database_size('{database_name}'));"
             ]
 
-            env = os.environ.copy()
-            if self.host_config.password:
-                env["PGPASSWORD"] = self.host_config.password
-
-            result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 return result.stdout.strip()
         except:
@@ -434,13 +446,8 @@ class PostgreSQLLister:
             "--command", column_query
         ]
 
-        env = os.environ.copy()
-        if self.host_config.password:
-            env["PGPASSWORD"] = self.host_config.password
-
         result = subprocess.run(
             cmd,
-            env=env,
             capture_output=True,
             text=True,
             timeout=30
@@ -465,7 +472,6 @@ class PostgreSQLLister:
 
         result = subprocess.run(
             cmd,
-            env=env,
             capture_output=True,
             text=True,
             timeout=30

@@ -23,6 +23,27 @@ from .ssh import SSHManager
 console = Console()
 
 
+def _get_auth_help_message(host_config: HostConfig) -> str:
+    """Get helpful authentication error message with .pgpass guidance."""
+    if isinstance(host_config, LocalHost):
+        return (
+            f"\n\n💡 Authentication Help:\n"
+            f"Set up PostgreSQL authentication in ~/.pgpass:\n"
+            f"  {host_config.host}:{host_config.port}:*:{host_config.superuser}:your_password\n"
+            f"Then run: chmod 600 ~/.pgpass"
+        )
+    elif isinstance(host_config, SSHHost):
+        return (
+            f"\n\n💡 Authentication Help:\n"
+            f"For SSH connections, ensure:\n"
+            f"1. SSH access is configured in ~/.ssh/config\n"
+            f"2. PostgreSQL authentication is set up on the remote host\n"
+            f"3. The user '{host_config.superuser}' has appropriate permissions"
+        )
+    else:
+        return ""
+
+
 class DatabaseSyncManager:
     """Manage database synchronization between hosts."""
 
@@ -186,15 +207,9 @@ class DatabaseSyncManager:
             elif schema_only:
                 cmd.append("--schema-only")
 
-            # Set environment variables for password
-            env = os.environ.copy()
-            if self.source_config.password:
-                env["PGPASSWORD"] = self.source_config.password
-
             # Execute pg_dump
             result = subprocess.run(
                 cmd,
-                env=env,
                 capture_output=True,
                 text=True,
                 timeout=300  # 5 minute timeout
@@ -203,7 +218,10 @@ class DatabaseSyncManager:
             if result.returncode == 0:
                 return True, f"Database dump created: {dump_file}"
             else:
-                return False, f"pg_dump failed: {result.stderr}"
+                error_msg = f"pg_dump failed: {result.stderr}"
+                if "authentication failed" in result.stderr.lower() or "password" in result.stderr.lower():
+                    error_msg += _get_auth_help_message(self.source_config)
+                return False, error_msg
 
         except subprocess.TimeoutExpired:
             return False, "Database dump timed out"
@@ -362,11 +380,6 @@ class DatabaseSyncManager:
     ) -> tuple[bool, str]:
         """Restore database dump to local PostgreSQL."""
         try:
-            # Set environment variables for password
-            env = os.environ.copy()
-            if self.destination_config.password:
-                env["PGPASSWORD"] = self.destination_config.password
-
             # Drop existing database if requested
             if drop_existing:
                 drop_cmd = [
@@ -378,7 +391,7 @@ class DatabaseSyncManager:
                     database_name
                 ]
 
-                subprocess.run(drop_cmd, env=env, capture_output=True, timeout=30)
+                subprocess.run(drop_cmd, capture_output=True, timeout=30)
 
             # Create database
             createdb_cmd = [
@@ -391,7 +404,6 @@ class DatabaseSyncManager:
 
             result = subprocess.run(
                 createdb_cmd,
-                env=env,
                 capture_output=True,
                 text=True,
                 timeout=30
@@ -413,7 +425,6 @@ class DatabaseSyncManager:
 
             result = subprocess.run(
                 psql_cmd,
-                env=env,
                 capture_output=True,
                 text=True,
                 timeout=300  # 5 minute timeout
@@ -422,7 +433,10 @@ class DatabaseSyncManager:
             if result.returncode == 0:
                 return True, f"Database '{database_name}' restored successfully"
             else:
-                return False, f"psql restore failed: {result.stderr}"
+                error_msg = f"psql restore failed: {result.stderr}"
+                if "authentication failed" in result.stderr.lower() or "password" in result.stderr.lower():
+                    error_msg += _get_auth_help_message(self.destination_config)
+                return False, error_msg
 
         except subprocess.TimeoutExpired:
             return False, "Database restore timed out"
@@ -547,13 +561,8 @@ class DatabaseSyncManager:
                 "--field-separator=|"
             ]
 
-            env = os.environ.copy()
-            if host_config.password:
-                env["PGPASSWORD"] = host_config.password
-
             result = subprocess.run(
                 cmd,
-                env=env,
                 capture_output=True,
                 text=True,
                 timeout=30

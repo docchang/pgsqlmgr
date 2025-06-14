@@ -1,6 +1,5 @@
 """PostgreSQL database operations and installation management."""
 
-import os
 import platform
 import subprocess
 from pathlib import Path
@@ -15,6 +14,28 @@ from .config import HostConfig, LocalHost, SSHHost
 from .ssh import SSHManager
 
 console = Console()
+
+
+def _get_auth_help_message(host_config: HostConfig) -> str:
+    """Get helpful authentication error message with .pgpass guidance."""
+    if isinstance(host_config, LocalHost):
+        return (
+            f"\n\n💡 Authentication Help:\n"
+            f"Set up PostgreSQL authentication in ~/.pgpass:\n"
+            f"  {host_config.host}:{host_config.port}:*:{host_config.superuser}:your_password\n"
+            f"Then run: chmod 600 ~/.pgpass"
+        )
+    elif isinstance(host_config, SSHHost):
+        return (
+            f"\n\n💡 Authentication Help:\n"
+            f"For SSH connections, ensure:\n"
+            f"1. SSH access is configured in ~/.ssh/config\n"
+            f"2. PostgreSQL authentication is set up on the remote host\n"
+            f"3. The user '{host_config.superuser}' has appropriate permissions"
+        )
+    else:
+        return ""
+
 
 # PostgreSQL installation commands by platform
 INSTALL_COMMANDS = {
@@ -161,15 +182,9 @@ class DatabaseManager:
                 database_name
             ]
 
-            # Set environment variables for password
-            env = os.environ.copy()
-            if self.config.password:
-                env["PGPASSWORD"] = self.config.password
-
             # Execute dropdb command
             result = subprocess.run(
                 cmd,
-                env=env,
                 capture_output=True,
                 text=True,
                 timeout=60  # 1 minute timeout
@@ -182,7 +197,10 @@ class DatabaseManager:
                 if "does not exist" in result.stderr.lower():
                     return True, f"Database '{database_name}' does not exist (already deleted)"
                 else:
-                    return False, f"Failed to delete database: {result.stderr.strip()}"
+                    error_msg = f"Failed to delete database: {result.stderr.strip()}"
+                    if "authentication failed" in result.stderr.lower() or "password" in result.stderr.lower():
+                        error_msg += _get_auth_help_message(self.config)
+                    return False, error_msg
 
         except subprocess.TimeoutExpired:
             return False, f"Database deletion timed out for '{database_name}'"
@@ -303,13 +321,8 @@ class DatabaseManager:
                 "--command", query.replace("%s", f"'{database_name}'")
             ]
 
-            env = os.environ.copy()
-            if self.config.password:
-                env["PGPASSWORD"] = self.config.password
-
             result = subprocess.run(
                 cmd,
-                env=env,
                 capture_output=True,
                 text=True,
                 timeout=30
@@ -332,6 +345,13 @@ class DatabaseManager:
                             "active_connections": parts[7].strip(),
                             "exists": True
                         }
+
+            # Check for authentication errors
+            if result.returncode != 0:
+                error_msg = f"Failed to get database info: {result.stderr.strip()}"
+                if "authentication failed" in result.stderr.lower() or "password" in result.stderr.lower():
+                    error_msg += _get_auth_help_message(self.config)
+                return {"exists": False, "error": error_msg}
 
             return {"exists": False, "error": "Database not found"}
 
