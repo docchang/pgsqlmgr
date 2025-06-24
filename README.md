@@ -18,7 +18,7 @@ PostgreSQL Manager (`pgsqlmgr`) is a Python-based command-line tool designed to 
 - 🔍 **Table Content Preview**: View actual table data (10 records per table, integrated with table listing)
 - 👥 **User Management**: List PostgreSQL users/roles with detailed permission information
 - 🎨 **Rich CLI Interface**: Beautiful command-line interface with colored tables and progress indicators
-- 🔐 **Credential Management**: Support for password-based authentication
+- 🔐 **Secure Authentication**: PostgreSQL standard `.pgpass` authentication with helpful error guidance
 - 🏗️ **Type-Safe Configuration**: Enum-based host types with inheritance for maintainability
 - ✅ **Configuration Validation**: Comprehensive config file validation with detailed error reporting
 
@@ -26,15 +26,16 @@ PostgreSQL Manager (`pgsqlmgr`) is a Python-based command-line tool designed to 
 - ☁️ **Cloud Integration**: Support for Supabase, AWS RDS, and other cloud providers
 - 🚀 **Advanced Sync Options**: Incremental sync, schema-only sync, and more
 - 📊 **Monitoring Dashboard**: Optional web interface for database monitoring
-- 🔐 **Advanced Security**: `.pgpass` file generation and SSH key management
+- 🔐 **Advanced Security**: `.pgpass` file generation helper and SSH key management
 
 ## 🏗️ Project Status
 
 **Current Status**: 🚀 **Active Development - Core Features Complete**
 
-The project has implemented all core database management functionality including listing, synchronization, and deletion with comprehensive testing coverage (133 tests passing). The foundation is solid with modern Python packaging standards and robust error handling.
+The project has implemented all core database management functionality including listing, synchronization, and deletion with comprehensive testing coverage (127 tests passing). The foundation is solid with modern Python packaging standards, secure authentication, and robust error handling.
 
 **Recent Additions**:
+- ✅ **Authentication & Configuration Cleanup**: Removed password fields, implemented `.pgpass` authentication with helpful error guidance
 - ✅ **Database Deletion Functionality**: Safe deletion with confirmation prompts and backup options
 - ✅ Complete listing functionality (databases, tables, users)
 - ✅ Table content preview with intelligent column styling
@@ -42,7 +43,7 @@ The project has implemented all core database management functionality including
 - ✅ Rich table displays with color coding
 - ✅ Inheritance-based configuration system
 - ✅ Type-safe enum system for host types
-- ✅ Comprehensive test suite (133 tests passing)
+- ✅ Comprehensive test suite (127 tests passing)
 
 ## 🚀 Installation
 
@@ -141,6 +142,22 @@ Host staging
     IdentityFile ~/.ssh/id_rsa
 ```
 
+**PostgreSQL Authentication**: Set up PostgreSQL authentication using the standard `.pgpass` file:
+
+```bash
+# ~/.pgpass format: hostname:port:database:username:password
+# Only superuser passwords needed - connection details are in ~/.ssh/config
+
+# Local PostgreSQL
+localhost:5432:*:postgres:your_local_password
+
+# Remote connections via SSH tunnels (use localhost after tunnel)
+localhost:5433:*:postgres:production_password
+localhost:5434:*:postgres:staging_password
+```
+
+**Important**: Set secure permissions: `chmod 600 ~/.pgpass`
+
 ### Configuration
 
 Initialize your configuration:
@@ -157,7 +174,6 @@ hosts:
     host: localhost
     port: 5432
     superuser: postgres
-    password: your_password_here
     description: Local PostgreSQL instance
 
   production:
@@ -166,7 +182,6 @@ hosts:
     host: localhost
     port: 5432
     superuser: postgres
-    password: production_password
     description: Production server via SSH
 
   staging:
@@ -175,17 +190,20 @@ hosts:
     host: localhost
     port: 5432
     superuser: admin
-    password: staging_password
     description: Staging server via SSH
+
 
   cloud_db:
     type: cloud
     host: db.example.com
     port: 5432
     superuser: admin
-    password: cloud_password
     description: Cloud PostgreSQL instance
 ```
+
+**Note**: 
+- Database connection passwords are managed through `~/.pgpass` file, not in the configuration. See Prerequisites section for setup instructions.
+- For SSH hosts, during installation the configured `superuser` is created without password (using trusted authentication).
 
 ### Available Commands
 
@@ -202,6 +220,9 @@ pgsqlmgr init-config
 
 # List all configured hosts with connection details
 pgsqlmgr list-hosts
+
+# List hosts with detailed OS and PostgreSQL installation status
+pgsqlmgr list-hosts --detailed
 
 # Show detailed configuration for a specific host
 pgsqlmgr show-config <host_name>
@@ -245,6 +266,24 @@ pgsqlmgr check-install production
 
 # Install PostgreSQL on a host
 pgsqlmgr install production
+
+# Update PostgreSQL to the latest version
+pgsqlmgr update production
+
+# Update with database backup before upgrading
+pgsqlmgr update production --backup-data
+
+# Force update without confirmation (for automation)
+pgsqlmgr update production --force
+
+# Uninstall PostgreSQL from a host (with confirmation)
+pgsqlmgr uninstall production
+
+# Uninstall with database backup before removal
+pgsqlmgr uninstall production --backup-data
+
+# Force uninstall without confirmation (for automation)
+pgsqlmgr uninstall production --force
 
 # Start PostgreSQL service
 pgsqlmgr start-service production
@@ -381,11 +420,32 @@ $ pgsqlmgr list-hosts
 │ staging    │ ssh   │ ssh staging → localhost:5432    │ Staging server via SSH (uses ~/.ssh/config)    │
 │ cloud_db   │ cloud │ db.example.com:5432             │ Cloud PostgreSQL instance                       │
 └────────────┴───────┴─────────────────────────────────┴────────────────────────────────────────────────┘
+
+$ pgsqlmgr list-hosts --detailed
+                                     Configured Hosts (Detailed)                                      
+┏━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Host Name  ┃ Type  ┃ Connection                      ┃ OS Info          ┃ PostgreSQL       ┃ Description                                    ┃
+┡━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ local      │ local │ localhost:5432                  │ Darwin 24.5.0    │ ✅ v15           │ Local PostgreSQL instance                      │
+│ production │ ssh   │ ssh production → localhost:5432 │ Ubuntu 24.04     │ ✅ v16           │ Production server via SSH (uses ~/.ssh/config) │
+│ staging    │ ssh   │ ssh staging → localhost:5432    │ Ubuntu 22.04     │ ❌ Not installed │ Staging server via SSH (uses ~/.ssh/config)    │
+│ cloud_db   │ cloud │ db.example.com:5432             │ Cloud            │ ✅ v17           │ Cloud PostgreSQL instance                       │
+└────────────┴───────┴─────────────────────────────────┴──────────────────┴──────────────────┴────────────────────────────────────────────────┘
 ```
+
+#### Authentication Setup
+The tool uses PostgreSQL's standard `.pgpass` file for authentication. When you run `pgsqlmgr init-config`, you'll receive detailed instructions on setting up your `.pgpass` file with the correct format and permissions.
+
+**Quick Setup Options:**
+1. **Automated setup**: Run `./scripts/setup-pgpass.sh` to create a template `.pgpass` file with proper permissions
+2. **Manual setup**: Copy `.pgpass.example` to `~/.pgpass` and customize it for your connections
+3. **From scratch**: Create `~/.pgpass` manually using the format shown in Prerequisites section
+
+**Development Convenience**: The project includes a symlink `.pgpass` → `~/.pgpass` for easy editing within your IDE while keeping the actual file in the standard location.
 
 #### Future Commands (Coming Soon)
 ```bash
-# Generate .pgpass file
+# Generate .pgpass file entries
 pgsqlmgr generate-pgpass
 ```
 
@@ -393,6 +453,7 @@ pgsqlmgr generate-pgpass
 
 - **Python**: 3.10 or higher
 - **Local PostgreSQL**: For local database operations
+- **PostgreSQL Authentication**: `.pgpass` file for secure password management
 - **SSH Configuration**: Pre-configured `~/.ssh/config` entries for remote servers
 - **SSH Key Authentication**: Passwordless SSH access to remote hosts
 - **Operating System**: 
@@ -421,7 +482,7 @@ pytest tests/test_listing.py -v
 pytest tests/test_config.py -v
 ```
 
-**Current Test Stats**: 133 tests passing, 13 skipped (integration tests)
+**Current Test Stats**: 127 tests passing, 19 skipped (integration tests)
 
 ## 🤝 Contributing
 
@@ -452,8 +513,12 @@ pgsql-manager/
 │       ├── db.py          # Database operations
 │       ├── sync.py        # Database synchronization
 │       └── ssh.py         # SSH operations
+├── scripts/
+│   └── setup-pgpass.sh     # Helper script to create .pgpass file
 ├── tests/                  # Comprehensive test suite
 ├── docs/                   # Documentation
+├── .pgpass                 # Symlink to ~/.pgpass for development convenience
+├── .pgpass.example         # Example .pgpass file with comprehensive examples
 ├── pyproject.toml          # Modern Python packaging
 └── README.md               # This file
 ```

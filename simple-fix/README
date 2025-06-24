@@ -1,9 +1,0 @@
-# 1. Activate ARM64 environment
-source setup_arm64_homebrew.sh
-
-# 2. Create ARM64 virtual environment
-create_arm64_venv my_project
-
-# 3. Activate and use
-source my_project/bin/activate
-python -c "import hashlib; print('Blake2b:', hashlib.blake2b(b'test').hexdigest()[:16])"

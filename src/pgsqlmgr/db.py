@@ -480,7 +480,7 @@ class PostgreSQLManager:
                 ["ssh", self.host_config.ssh_config, "psql --version"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=5  # Reduced from 30 to 5 seconds for quick status checks
             )
 
             if result.returncode == 0:
@@ -709,7 +709,7 @@ CentOS/RHEL:
                 ["ssh", self.host_config.ssh_config, "cat /etc/os-release 2>/dev/null || uname -s"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=5  # Reduced from 30 to 5 seconds for quick status checks
             )
 
             if result.returncode != 0:
@@ -834,24 +834,17 @@ CentOS/RHEL:
         return commands.get(os_type.lower())
 
     def _setup_postgresql_user(self) -> tuple[bool, str]:
-        """Setup PostgreSQL user with prompted credentials."""
+        """Setup PostgreSQL superuser without password."""
         try:
-            console.print(f"[blue]👤 Setting up PostgreSQL user on {self.host_config.ssh_config}...[/blue]")
+            console.print(f"[blue]👤 Setting up PostgreSQL superuser on {self.host_config.ssh_config}...[/blue]")
 
-            # Check if user already has credentials configured
-            if hasattr(self.host_config, 'password') and self.host_config.password:
-                # Use existing credentials from config
-                username = self.host_config.superuser
-                password = self.host_config.password
-                console.print(f"[blue]   Using configured credentials for user: {username}[/blue]")
-            else:
-                # Prompt for new credentials
-                console.print("[yellow]🔐 PostgreSQL needs a user account for sync operations[/yellow]")
-                username = Prompt.ask("PostgreSQL username", default="pgsqlmgr")
-                password = Prompt.ask("PostgreSQL password", password=True)
+            # Use the configured superuser from the host config
+            username = self.host_config.superuser
+            console.print(f"[blue]   Using superuser: {username}[/blue]")
 
-            # Create PostgreSQL user
-            create_user_cmd = f"sudo -u postgres psql -c \"CREATE USER {username} WITH PASSWORD '{password}' CREATEDB CREATEROLE;\""
+            # Create PostgreSQL superuser without password (trusted authentication)
+            # This is more secure for local/SSH environments where access is already controlled
+            create_user_cmd = f"sudo -u postgres psql -c \"DO \\$\\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_user WHERE usename = '{username}') THEN CREATE USER {username} WITH SUPERUSER CREATEDB CREATEROLE; END IF; END \\$\\$;\""
 
             result = subprocess.run(
                 ["ssh", self.host_config.ssh_config, create_user_cmd],
@@ -860,17 +853,12 @@ CentOS/RHEL:
                 timeout=60
             )
 
-            # Check if user creation succeeded or user already exists
-            if result.returncode == 0 or "already exists" in result.stderr:
-                console.print(f"[green]✅ PostgreSQL user '{username}' ready[/green]")
+            # Check if user creation succeeded
+            if result.returncode == 0:
+                console.print(f"[green]✅ PostgreSQL superuser '{username}' ready (no password required)[/green]")
+                console.print("[blue]💡 User can connect without password via local/SSH trust authentication[/blue]")
 
-                # Update host config with credentials if not already set
-                if not hasattr(self.host_config, 'password') or not self.host_config.password:
-                    self.host_config.superuser = username
-                    self.host_config.password = password
-                    console.print("[blue]💡 Credentials saved for this session[/blue]")
-
-                return True, f"User '{username}' configured successfully"
+                return True, f"Superuser '{username}' configured successfully without password"
             else:
                 return False, f"Failed to create user: {result.stderr}"
 
@@ -941,3 +929,575 @@ CentOS/RHEL:
             return False, "SSH service start timed out"
         except Exception as e:
             return False, f"SSH service start failed: {e}"
+
+    def uninstall_postgresql(self) -> tuple[bool, str]:
+        """
+        Uninstall PostgreSQL from the host.
+
+        Returns:
+            Tuple of (success, message)
+        """
+        if self.is_local:
+            return self._uninstall_local_postgresql()
+        elif self.is_ssh:
+            return self._uninstall_ssh_postgresql()
+        else:
+            return False, "Unsupported host configuration"
+
+    def _uninstall_local_postgresql(self) -> tuple[bool, str]:
+        """Uninstall PostgreSQL locally."""
+        system = platform.system()
+
+        if system == "Darwin":  # macOS
+            return self._uninstall_macos()
+        elif system == "Linux":
+            return self._uninstall_linux()
+        else:
+            return False, f"Automatic uninstallation not supported on {system}. Please uninstall PostgreSQL manually."
+
+    def _uninstall_macos(self) -> tuple[bool, str]:
+        """Uninstall PostgreSQL on macOS using Homebrew."""
+        console.print("[blue]🍺 Uninstalling PostgreSQL via Homebrew...[/blue]")
+
+        try:
+            # Stop the service first
+            console.print("[blue]🛑 Stopping PostgreSQL service...[/blue]")
+            stop_result = subprocess.run(
+                ["brew", "services", "stop", "postgresql@15"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            # Uninstall PostgreSQL (ignore errors if not installed)
+            console.print("[blue]🗑️  Removing PostgreSQL package...[/blue]")
+            result = subprocess.run(
+                ["brew", "uninstall", "--ignore-dependencies", "postgresql@15"],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            # Also try to remove any PostgreSQL data directories
+            console.print("[blue]🗑️  Removing PostgreSQL data directories...[/blue]")
+            data_cleanup = subprocess.run(
+                ["rm", "-rf", "/opt/homebrew/var/postgresql@15", "/usr/local/var/postgresql@15"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0 or "No such keg" in result.stderr:
+                return True, "PostgreSQL uninstalled successfully"
+            else:
+                return False, f"Uninstallation failed: {result.stderr}"
+
+        except subprocess.TimeoutExpired:
+            return False, "Uninstallation timed out"
+        except Exception as e:
+            return False, f"Uninstallation error: {e}"
+
+    def _uninstall_linux(self) -> tuple[bool, str]:
+        """Uninstall PostgreSQL on Linux (placeholder)."""
+        console.print("[blue]🐧 Uninstalling PostgreSQL on Linux...[/blue]")
+
+        instructions = """
+Manual PostgreSQL uninstallation required:
+
+Ubuntu/Debian:
+  sudo systemctl stop postgresql
+  sudo systemctl disable postgresql
+  sudo apt remove --purge postgresql postgresql-*
+  sudo rm -rf /var/lib/postgresql/
+  sudo rm -rf /etc/postgresql/
+
+CentOS/RHEL:
+  sudo systemctl stop postgresql
+  sudo systemctl disable postgresql
+  sudo yum remove postgresql postgresql-server
+  sudo rm -rf /var/lib/pgsql/
+"""
+        console.print(Panel(instructions, title="Manual Uninstallation Required", style="yellow"))
+        return False, "Automatic Linux uninstallation not yet implemented. See instructions above."
+
+    def _uninstall_ssh_postgresql(self) -> tuple[bool, str]:
+        """Uninstall PostgreSQL on SSH host with OS detection."""
+        try:
+            console.print(f"[blue]🚀 Uninstalling PostgreSQL on {self.host_config.ssh_config}...[/blue]")
+
+            # Step 1: Detect operating system
+            os_info = self._detect_ssh_os()
+            if not os_info:
+                return False, "Could not detect operating system"
+
+            os_type, os_version = os_info
+            console.print(f"[blue]🔍 Detected OS: {os_type} {os_version}[/blue]")
+
+            # Step 2: Stop PostgreSQL service
+            console.print("[blue]🛑 Stopping PostgreSQL service...[/blue]")
+            stop_result = subprocess.run(
+                ["ssh", self.host_config.ssh_config, "sudo systemctl stop postgresql"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            # Step 3: Uninstall PostgreSQL based on OS
+            uninstall_success, uninstall_msg = self._uninstall_postgresql_by_os(os_type, os_version)
+            if not uninstall_success:
+                return False, f"Uninstallation failed: {uninstall_msg}"
+
+            console.print(f"[green]✅ PostgreSQL successfully uninstalled from {self.host_config.ssh_config}[/green]")
+            return True, "PostgreSQL uninstalled successfully"
+
+        except Exception as e:
+            return False, f"Uninstallation error: {e}"
+
+    def _uninstall_postgresql_by_os(self, os_type: str, os_version: str) -> tuple[bool, str]:
+        """Uninstall PostgreSQL based on detected OS."""
+        uninstall_commands = self._get_uninstall_commands(os_type)
+
+        if not uninstall_commands:
+            return False, f"Unsupported operating system: {os_type}"
+
+        console.print(f"[blue]🗑️  Uninstalling PostgreSQL using {uninstall_commands['name']}...[/blue]")
+
+        # Execute uninstall commands
+        for description, command in uninstall_commands['commands']:
+            console.print(f"[blue]   {description}[/blue]")
+
+            result = subprocess.run(
+                ["ssh", self.host_config.ssh_config, command],
+                capture_output=True,
+                text=True,
+                timeout=300  # Increased from 120 to 300 seconds (5 minutes) for uninstall operations
+            )
+
+            # For uninstall operations, some failures are acceptable (e.g., package not found)
+            if result.returncode != 0 and "not found" not in result.stderr.lower() and "not installed" not in result.stderr.lower():
+                console.print(f"[yellow]⚠️  {description} warning: {result.stderr}[/yellow]")
+
+        return True, f"PostgreSQL uninstalled using {uninstall_commands['name']}"
+
+    def _get_uninstall_commands(self, os_type: str) -> dict | None:
+        """Get uninstall commands for specific OS."""
+        commands = {
+            'ubuntu': {
+                'name': 'apt (Ubuntu/Debian)',
+                'commands': [
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
+                    ("Removing PostgreSQL packages", "sudo apt remove --purge -y postgresql postgresql-*"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/postgresql/"),
+                    ("Removing PostgreSQL config", "sudo rm -rf /etc/postgresql/"),
+                    ("Cleaning up packages", "sudo apt autoremove -y"),
+                ]
+            },
+            'debian': {
+                'name': 'apt (Debian)',
+                'commands': [
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
+                    ("Removing PostgreSQL packages", "sudo apt remove --purge -y postgresql postgresql-*"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/postgresql/"),
+                    ("Removing PostgreSQL config", "sudo rm -rf /etc/postgresql/"),
+                    ("Cleaning up packages", "sudo apt autoremove -y"),
+                ]
+            },
+            'centos': {
+                'name': 'yum (CentOS/RHEL)',
+                'commands': [
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
+                    ("Removing PostgreSQL packages", "sudo yum remove -y postgresql-server postgresql-contrib"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/pgsql/"),
+                ]
+            },
+            'rhel': {
+                'name': 'yum (Red Hat)',
+                'commands': [
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
+                    ("Removing PostgreSQL packages", "sudo yum remove -y postgresql-server postgresql-contrib"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/pgsql/"),
+                ]
+            },
+            'fedora': {
+                'name': 'dnf (Fedora)',
+                'commands': [
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
+                    ("Removing PostgreSQL packages", "sudo dnf remove -y postgresql-server postgresql-contrib"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/pgsql/"),
+                ]
+            }
+        }
+
+        return commands.get(os_type.lower())
+
+    def backup_all_databases(self, backup_path: str | None = None) -> bool:
+        """
+        Create backups of all user databases before uninstallation.
+
+        Args:
+            backup_path: Directory to save backups (default: current directory)
+
+        Returns:
+            True if all backups succeeded, False otherwise
+        """
+        try:
+            console.print("[blue]🔍 Discovering databases to backup...[/blue]")
+            
+            # Create database manager to list databases
+            db_manager = DatabaseManager(self.host_config)
+            databases = db_manager.list_databases()
+            
+            # Filter out system databases
+            user_databases = [db for db in databases if db not in ['postgres', 'template0', 'template1']]
+            
+            if not user_databases:
+                console.print("[blue]ℹ️  No user databases found to backup[/blue]")
+                return True
+            
+            console.print(f"[blue]📦 Found {len(user_databases)} user database(s) to backup: {', '.join(user_databases)}[/blue]")
+            
+            # Set backup directory
+            if backup_path:
+                backup_dir = Path(backup_path)
+            else:
+                backup_dir = Path.cwd()
+            
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Backup each database
+            backup_success = True
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            for db_name in user_databases:
+                backup_filename = f"{db_name}_backup_{timestamp}.sql"
+                backup_file = backup_dir / backup_filename
+                
+                console.print(f"[blue]💾 Backing up database '{db_name}' to {backup_file}...[/blue]")
+                
+                try:
+                    db_manager.dump_database(db_name, backup_file)
+                    console.print(f"[green]✅ Database '{db_name}' backed up successfully[/green]")
+                except Exception as e:
+                    console.print(f"[red]❌ Failed to backup database '{db_name}': {e}[/red]")
+                    backup_success = False
+            
+            if backup_success:
+                console.print(f"[green]✅ All databases backed up successfully to {backup_dir}[/green]")
+            else:
+                console.print(f"[yellow]⚠️  Some database backups failed. Check logs above.[/yellow]")
+                
+            return backup_success
+            
+        except Exception as e:
+            console.print(f"[red]❌ Error during database backup: {e}[/red]")
+            return False
+
+    def check_update_available(self) -> tuple[bool, str]:
+        """
+        Check if PostgreSQL update is available.
+
+        Returns:
+            Tuple of (update_available, update_info)
+        """
+        if self.is_local:
+            return self._check_local_update()
+        elif self.is_ssh:
+            return self._check_ssh_update()
+        else:
+            return False, "Update check not supported for this host type"
+
+    def _check_local_update(self) -> tuple[bool, str]:
+        """Check for PostgreSQL updates locally."""
+        system = platform.system()
+
+        try:
+            if system == "Darwin":  # macOS
+                # Check if there's a newer version available via Homebrew
+                result = subprocess.run(
+                    ["brew", "outdated", "postgresql@15"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode == 0 and result.stdout.strip():
+                    return True, "Update available via Homebrew"
+                else:
+                    return False, "PostgreSQL is up to date"
+
+            elif system == "Linux":
+                # Check for updates using package manager
+                result = subprocess.run(
+                    ["apt", "list", "--upgradable", "postgresql"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode == 0 and "postgresql" in result.stdout:
+                    return True, "Update available via package manager"
+                else:
+                    return False, "PostgreSQL is up to date"
+            else:
+                return False, f"Update check not supported on {system}"
+
+        except subprocess.TimeoutExpired:
+            return False, "Update check timed out"
+        except Exception as e:
+            return False, f"Error checking for updates: {e}"
+
+    def _check_ssh_update(self) -> tuple[bool, str]:
+        """Check for PostgreSQL updates on SSH host."""
+        try:
+            console.print(f"[blue]🔍 Checking for PostgreSQL updates on {self.host_config.ssh_config}...[/blue]")
+
+            # Detect OS first
+            os_info = self._detect_ssh_os()
+            if not os_info:
+                return False, "Could not detect operating system"
+
+            os_type, _ = os_info
+
+            # Check for updates based on OS
+            if os_type.lower() in ['ubuntu', 'debian']:
+                # Update package list and check for upgrades
+                update_result = subprocess.run(
+                    ["ssh", self.host_config.ssh_config, "sudo apt update && apt list --upgradable postgresql 2>/dev/null"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if update_result.returncode == 0 and "postgresql" in update_result.stdout:
+                    return True, "Update available via apt"
+                else:
+                    return False, "PostgreSQL is up to date"
+
+            elif os_type.lower() in ['centos', 'rhel']:
+                # Check for updates using yum
+                result = subprocess.run(
+                    ["ssh", self.host_config.ssh_config, "yum list updates postgresql-server 2>/dev/null || echo 'No updates'"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0 and "postgresql-server" in result.stdout:
+                    return True, "Update available via yum"
+                else:
+                    return False, "PostgreSQL is up to date"
+
+            elif os_type.lower() == 'fedora':
+                # Check for updates using dnf
+                result = subprocess.run(
+                    ["ssh", self.host_config.ssh_config, "dnf list updates postgresql-server 2>/dev/null || echo 'No updates'"],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0 and "postgresql-server" in result.stdout:
+                    return True, "Update available via dnf"
+                else:
+                    return False, "PostgreSQL is up to date"
+            else:
+                return False, f"Update check not supported for {os_type}"
+
+        except subprocess.TimeoutExpired:
+            return False, "Update check timed out"
+        except Exception as e:
+            return False, f"Error checking for updates: {e}"
+
+    def update_postgresql(self) -> tuple[bool, str]:
+        """
+        Update PostgreSQL to the latest version.
+
+        Returns:
+            Tuple of (success, message)
+        """
+        if self.is_local:
+            return self._update_local_postgresql()
+        elif self.is_ssh:
+            return self._update_ssh_postgresql()
+        else:
+            return False, "Update not supported for this host type"
+
+    def _update_local_postgresql(self) -> tuple[bool, str]:
+        """Update PostgreSQL locally."""
+        system = platform.system()
+
+        if system == "Darwin":  # macOS
+            return self._update_macos()
+        elif system == "Linux":
+            return self._update_linux()
+        else:
+            return False, f"Automatic update not supported on {system}. Please update PostgreSQL manually."
+
+    def _update_macos(self) -> tuple[bool, str]:
+        """Update PostgreSQL on macOS using Homebrew."""
+        console.print("[blue]🍺 Updating PostgreSQL via Homebrew...[/blue]")
+
+        try:
+            # Update Homebrew first
+            console.print("[blue]📦 Updating Homebrew...[/blue]")
+            update_result = subprocess.run(
+                ["brew", "update"],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            # Upgrade PostgreSQL
+            console.print("[blue]⬆️  Upgrading PostgreSQL...[/blue]")
+            result = subprocess.run(
+                ["brew", "upgrade", "postgresql@15"],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minutes timeout
+            )
+
+            if result.returncode == 0:
+                console.print("[green]✅ PostgreSQL updated successfully![/green]")
+                
+                # Restart the service
+                console.print("[blue]🔄 Restarting PostgreSQL service...[/blue]")
+                restart_result = subprocess.run(
+                    ["brew", "services", "restart", "postgresql@15"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                if restart_result.returncode == 0:
+                    return True, "PostgreSQL updated and restarted successfully"
+                else:
+                    return True, "PostgreSQL updated but service restart failed. Restart manually with: brew services restart postgresql@15"
+            else:
+                return False, f"Update failed: {result.stderr}"
+
+        except subprocess.TimeoutExpired:
+            return False, "Update timed out"
+        except Exception as e:
+            return False, f"Update error: {e}"
+
+    def _update_linux(self) -> tuple[bool, str]:
+        """Update PostgreSQL on Linux (placeholder)."""
+        console.print("[blue]🐧 Updating PostgreSQL on Linux...[/blue]")
+
+        instructions = """
+Manual PostgreSQL update required:
+
+Ubuntu/Debian:
+  sudo apt update
+  sudo apt upgrade postgresql postgresql-contrib
+  sudo systemctl restart postgresql
+
+CentOS/RHEL:
+  sudo yum update postgresql-server
+  sudo systemctl restart postgresql
+
+Fedora:
+  sudo dnf update postgresql-server
+  sudo systemctl restart postgresql
+"""
+        console.print(Panel(instructions, title="Manual Update Required", style="yellow"))
+        return False, "Automatic Linux update not yet implemented. See instructions above."
+
+    def _update_ssh_postgresql(self) -> tuple[bool, str]:
+        """Update PostgreSQL on SSH host with OS detection."""
+        try:
+            console.print(f"[blue]🚀 Updating PostgreSQL on {self.host_config.ssh_config}...[/blue]")
+
+            # Step 1: Detect operating system
+            os_info = self._detect_ssh_os()
+            if not os_info:
+                return False, "Could not detect operating system"
+
+            os_type, os_version = os_info
+            console.print(f"[blue]🔍 Detected OS: {os_type} {os_version}[/blue]")
+
+            # Step 2: Update PostgreSQL based on OS
+            update_success, update_msg = self._update_postgresql_by_os(os_type, os_version)
+            if not update_success:
+                return False, f"Update failed: {update_msg}"
+
+            console.print(f"[green]✅ PostgreSQL successfully updated on {self.host_config.ssh_config}[/green]")
+            return True, "PostgreSQL updated successfully"
+
+        except Exception as e:
+            return False, f"Update error: {e}"
+
+    def _update_postgresql_by_os(self, os_type: str, os_version: str) -> tuple[bool, str]:
+        """Update PostgreSQL based on detected OS."""
+        update_commands = self._get_update_commands(os_type)
+
+        if not update_commands:
+            return False, f"Unsupported operating system: {os_type}"
+
+        console.print(f"[blue]⬆️  Updating PostgreSQL using {update_commands['name']}...[/blue]")
+
+        # Execute update commands
+        for description, command in update_commands['commands']:
+            console.print(f"[blue]   {description}[/blue]")
+
+            result = subprocess.run(
+                ["ssh", self.host_config.ssh_config, command],
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout for update operations
+            )
+
+            if result.returncode != 0:
+                return False, f"{description} failed: {result.stderr}"
+
+        return True, f"PostgreSQL updated using {update_commands['name']}"
+
+    def _get_update_commands(self, os_type: str) -> dict | None:
+        """Get update commands for specific OS."""
+        commands = {
+            'ubuntu': {
+                'name': 'apt (Ubuntu/Debian)',
+                'commands': [
+                    ("Updating package list", "sudo apt update"),
+                    ("Upgrading PostgreSQL", "sudo apt upgrade -y postgresql postgresql-contrib"),
+                    ("Restarting PostgreSQL service", "sudo systemctl restart postgresql"),
+                ]
+            },
+            'debian': {
+                'name': 'apt (Debian)',
+                'commands': [
+                    ("Updating package list", "sudo apt update"),
+                    ("Upgrading PostgreSQL", "sudo apt upgrade -y postgresql postgresql-contrib"),
+                    ("Restarting PostgreSQL service", "sudo systemctl restart postgresql"),
+                ]
+            },
+            'centos': {
+                'name': 'yum (CentOS/RHEL)',
+                'commands': [
+                    ("Updating PostgreSQL", "sudo yum update -y postgresql-server postgresql-contrib"),
+                    ("Restarting PostgreSQL service", "sudo systemctl restart postgresql"),
+                ]
+            },
+            'rhel': {
+                'name': 'yum (Red Hat)',
+                'commands': [
+                    ("Updating PostgreSQL", "sudo yum update -y postgresql-server postgresql-contrib"),
+                    ("Restarting PostgreSQL service", "sudo systemctl restart postgresql"),
+                ]
+            },
+            'fedora': {
+                'name': 'dnf (Fedora)',
+                'commands': [
+                    ("Updating PostgreSQL", "sudo dnf update -y postgresql-server postgresql-contrib"),
+                    ("Restarting PostgreSQL service", "sudo systemctl restart postgresql"),
+                ]
+            }
+        }
+
+        return commands.get(os_type.lower())

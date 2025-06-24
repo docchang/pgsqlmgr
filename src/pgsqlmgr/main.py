@@ -104,9 +104,15 @@ def list_hosts(
         "--config",
         "-c",
         help="Path to configuration file"
+    ),
+    detailed: bool = typer.Option(
+        False,
+        "--detailed",
+        "-d",
+        help="Show detailed information including OS and PostgreSQL status"
     )
 ) -> None:
-    """List all configured PostgreSQL hosts."""
+    """List all configured PostgreSQL hosts with optional detailed information."""
     try:
         path = Path(config_path) if config_path else None
         hosts = get_host_list(path)
@@ -116,15 +122,26 @@ def list_hosts(
             console.print("Run [bold]pgsqlmgr init-config[/bold] to create a sample configuration")
             return
 
-        table = Table(title="Configured Hosts")
-        table.add_column("Host Name", style="cyan", no_wrap=True)
-        table.add_column("Type", style="magenta")
-        table.add_column("Connection", style="green")
-        table.add_column("Description", style="white")
+        if detailed:
+            table = Table(title="Configured Hosts (Detailed)")
+            table.add_column("Host Name", style="cyan", no_wrap=True)
+            table.add_column("Type", style="magenta")
+            table.add_column("Connection", style="green")
+            table.add_column("OS Info", style="blue")
+            table.add_column("PostgreSQL", style="yellow", max_width=40)
+            table.add_column("Description", style="white")
+        else:
+            table = Table(title="Configured Hosts")
+            table.add_column("Host Name", style="cyan", no_wrap=True)
+            table.add_column("Type", style="magenta")
+            table.add_column("Connection", style="green")
+            table.add_column("Description", style="white")
 
         config = load_config(path)
         for host_name in hosts:
             host_config = config.hosts[host_name]
+            
+            # Basic connection information
             if host_config.type == HostType.LOCAL:
                 connection = f"{host_config.host}:{host_config.port}"
             elif host_config.type == HostType.SSH:
@@ -133,9 +150,99 @@ def list_hosts(
                 connection = host_config.provider if hasattr(host_config, 'provider') else "unknown"
 
             description = host_config.description or ""
-            table.add_row(host_name, host_config.type.value, connection, description)
+            
+            if detailed:
+                # Get OS information and PostgreSQL status
+                console.print(f"[dim]Checking {host_name}...[/dim]", end="")
+                
+                os_info = "Unknown"
+                pg_status = "Unknown"
+                
+                try:
+                    pg_manager = PostgreSQLManager(host_config)
+                    
+                    # Get OS information for SSH hosts
+                    if host_config.type == HostType.SSH:
+                        try:
+                            # Use subprocess timeout for cross-platform compatibility
+                            os_result = pg_manager._detect_ssh_os()
+                            if os_result:
+                                os_type, os_version = os_result
+                                os_info = f"{os_type.title()} {os_version}"
+                            else:
+                                os_info = "Detection failed"
+                        except Exception:
+                            os_info = "Unreachable"
+                    elif host_config.type == HostType.LOCAL:
+                        import platform
+                        os_info = f"{platform.system()} {platform.release()}"
+                    else:
+                        os_info = "Cloud"
+                    
+                    # Check PostgreSQL installation
+                    try:
+                        is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
+                        
+                        if is_installed and version_info:
+                            # Parse and format PostgreSQL version information
+                            version_info = version_info.strip()
+                            
+                            # Extract just the version number
+                            import re
+                            
+                            # Match different version formats and extract just the version number
+                            # Examples: 
+                            # "psql (PostgreSQL) 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)" -> "v16.9"
+                            # "psql (PostgreSQL) 15.4" -> "v15.4" 
+                            # "PostgreSQL 16.9" -> "v16.9"
+                            patterns = [
+                                r'psql \(PostgreSQL\) (\d+\.?\d*(?:\.\d+)?)',  # psql output format
+                                r'PostgreSQL (\d+\.?\d*(?:\.\d+)?)',           # Direct PostgreSQL format
+                                r'(\d+\.?\d*(?:\.\d+)?)',                      # Just version number
+                            ]
+                            
+                            version_display = None
+                            for pattern in patterns:
+                                match = re.search(pattern, version_info, re.IGNORECASE)
+                                if match:
+                                    version_num = match.group(1)
+                                    version_display = f"v{version_num}"
+                                    break
+                            
+                            if not version_display:
+                                # Fallback: show "Installed" if we can't parse version
+                                version_display = "Installed"
+                            
+                            pg_status = f"✅ {version_display}"
+                        elif is_installed:
+                            pg_status = "✅ Installed"
+                        else:
+                            pg_status = "❌ Not installed"
+                    except Exception:
+                        if os_info == "Unreachable":
+                            pg_status = "Unreachable"
+                        else:
+                            pg_status = "Check failed"
+                        
+                except Exception as e:
+                    if host_config.type == HostType.LOCAL:
+                        import platform
+                        os_info = f"{platform.system()} {platform.release()}"
+                    else:
+                        os_info = "Check failed"
+                    pg_status = "Check failed"
+                
+                console.print("\r" + " " * 50 + "\r", end="")  # Clear the checking message
+                
+                table.add_row(host_name, host_config.type.value, connection, os_info, pg_status, description)
+            else:
+                table.add_row(host_name, host_config.type.value, connection, description)
 
         console.print(table)
+        
+        if not detailed:
+            console.print()
+            console.print("[dim]💡 Use --detailed or -d to see OS and PostgreSQL installation status[/dim]")
 
     except FileNotFoundError:
         console.print("[red]❌ Configuration file not found[/red]")
@@ -351,6 +458,274 @@ def install(
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]❌ Error during installation: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def uninstall(
+    host: str,
+    config_path: str | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file"
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force uninstallation without confirmation prompt"
+    ),
+    backup_data: bool = typer.Option(
+        False,
+        "--backup-data",
+        "-b",
+        help="Create backup of all databases before uninstalling"
+    ),
+    backup_path: str | None = typer.Option(
+        None,
+        "--backup-path",
+        help="Path to save database backups (default: current directory)"
+    )
+) -> None:
+    """Uninstall PostgreSQL from a host.
+    
+    This will completely remove PostgreSQL and all its data.
+    Use --backup-data to save all databases before uninstalling.
+    """
+    try:
+        path = Path(config_path) if config_path else None
+        host_config = get_host_config(host, path)
+
+        console.print(f"[red]🗑️  PostgreSQL Uninstallation Request[/red]")
+        console.print(f"[blue]   Host: {host}[/blue]")
+
+        # Create PostgreSQL manager
+        pg_manager = PostgreSQLManager(host_config)
+
+        # Check if PostgreSQL is installed
+        is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
+        
+        if not is_installed:
+            console.print(Panel(
+                f"ℹ️  PostgreSQL is not installed on '{host}'\n{status_msg}",
+                title="Nothing to Uninstall",
+                title_align="left",
+                style="blue"
+            ))
+            return
+
+        console.print(f"[blue]   Version: {version_info}[/blue]")
+
+        # Backup databases if requested
+        if backup_data:
+            console.print("[blue]💾 Creating backup of all databases...[/blue]")
+            backup_success = pg_manager.backup_all_databases(backup_path)
+            
+            if not backup_success and not force:
+                console.print("[red]❌ Backup failed. Use --force to continue without backup[/red]")
+                raise typer.Exit(1)
+
+        # Confirmation prompt (unless --force is used)
+        if not force:
+            console.print(f"\n[bold red]⚠️  WARNING: This will completely remove PostgreSQL from '{host}'![/bold red]")
+            console.print("[red]• All PostgreSQL services will be stopped[/red]")
+            console.print("[red]• All PostgreSQL software will be uninstalled[/red]")
+            console.print("[red]• All databases and data will be permanently deleted[/red]")
+            console.print("[red]• This action cannot be undone![/red]")
+            
+            if backup_data:
+                console.print("[green]💾 Database backups will be preserved[/green]")
+
+            confirm = typer.confirm(
+                f"\nAre you sure you want to completely uninstall PostgreSQL from '{host}'?",
+                default=False
+            )
+
+            if not confirm:
+                console.print("[yellow]❌ PostgreSQL uninstallation cancelled[/yellow]")
+                return
+
+        # Perform the uninstallation
+        console.print(f"\n[red]🗑️  Uninstalling PostgreSQL from '{host}'...[/red]")
+
+        success, message = pg_manager.uninstall_postgresql()
+
+        if success:
+            console.print(Panel(
+                f"✅ {message}",
+                title=f"Uninstallation Complete: {host}",
+                title_align="left",
+                style="green"
+            ))
+
+            # Verify uninstallation
+            console.print("[blue]🔍 Verifying uninstallation...[/blue]")
+            is_still_installed, verify_msg, _ = pg_manager.check_postgresql_installation()
+
+            if not is_still_installed:
+                console.print("[green]✅ Verification successful: PostgreSQL completely removed[/green]")
+            else:
+                console.print(f"[yellow]⚠️  Uninstallation completed but some components may remain: {verify_msg}[/yellow]")
+        else:
+            console.print(Panel(
+                f"❌ {message}",
+                title=f"Uninstallation Failed: {host}",
+                title_align="left",
+                style="red"
+            ))
+            raise typer.Exit(1)
+
+    except KeyError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        raise typer.Exit(1)
+    except FileNotFoundError:
+        console.print("[red]❌ Configuration file not found[/red]")
+        console.print("Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]❌ Error during uninstallation: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def update(
+    host: str,
+    config_path: str | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Path to configuration file"
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force update without confirmation prompt"
+    ),
+    backup_data: bool = typer.Option(
+        False,
+        "--backup-data",
+        "-b",
+        help="Create backup of all databases before updating"
+    ),
+    backup_path: str | None = typer.Option(
+        None,
+        "--backup-path",
+        help="Path to save database backups (default: current directory)"
+    )
+) -> None:
+    """Update PostgreSQL to the latest version on a host.
+    
+    This will upgrade PostgreSQL while preserving data.
+    Use --backup-data to save all databases before updating.
+    """
+    try:
+        path = Path(config_path) if config_path else None
+        host_config = get_host_config(host, path)
+
+        console.print(f"[blue]🔄 PostgreSQL Update Request[/blue]")
+        console.print(f"[blue]   Host: {host}[/blue]")
+
+        # Create PostgreSQL manager
+        pg_manager = PostgreSQLManager(host_config)
+
+        # Check if PostgreSQL is installed
+        is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
+        
+        if not is_installed:
+            console.print(Panel(
+                f"ℹ️  PostgreSQL is not installed on '{host}'\n{status_msg}",
+                title="Nothing to Update",
+                title_align="left",
+                style="blue"
+            ))
+            console.print(f"[yellow]💡 To install PostgreSQL, run: [bold]pgsqlmgr install {host}[/bold][/yellow]")
+            return
+
+        console.print(f"[blue]   Current Version: {version_info}[/blue]")
+
+        # Check if update is available
+        update_available, update_info = pg_manager.check_update_available()
+        
+        if not update_available:
+            console.print(Panel(
+                f"✅ PostgreSQL is already up to date\n{update_info}",
+                title="No Update Available",
+                title_align="left",
+                style="green"
+            ))
+            return
+
+        console.print(f"[green]📦 Update Available: {update_info}[/green]")
+
+        # Backup databases if requested
+        if backup_data:
+            console.print("[blue]💾 Creating backup of all databases...[/blue]")
+            backup_success = pg_manager.backup_all_databases(backup_path)
+            
+            if not backup_success and not force:
+                console.print("[red]❌ Backup failed. Use --force to continue without backup[/red]")
+                raise typer.Exit(1)
+
+        # Confirmation prompt (unless --force is used)
+        if not force:
+            console.print(f"\n[bold blue]🔄 Ready to update PostgreSQL on '{host}'[/bold blue]")
+            console.print("[blue]• PostgreSQL will be updated to the latest version[/blue]")
+            console.print("[blue]• Service will be restarted[/blue]")
+            console.print("[blue]• All data will be preserved[/blue]")
+            
+            if backup_data:
+                console.print("[green]💾 Database backups will be created[/green]")
+
+            confirm = typer.confirm(
+                f"\nProceed with PostgreSQL update on '{host}'?",
+                default=True
+            )
+
+            if not confirm:
+                console.print("[yellow]❌ PostgreSQL update cancelled[/yellow]")
+                return
+
+        # Perform the update
+        console.print(f"\n[blue]🔄 Updating PostgreSQL on '{host}'...[/blue]")
+
+        success, message = pg_manager.update_postgresql()
+
+        if success:
+            console.print(Panel(
+                f"✅ {message}",
+                title=f"Update Complete: {host}",
+                title_align="left",
+                style="green"
+            ))
+
+            # Verify update
+            console.print("[blue]🔍 Verifying update...[/blue]")
+            is_installed, verify_msg, new_version = pg_manager.check_postgresql_installation()
+
+            if is_installed and new_version:
+                console.print(f"[green]✅ Update successful: {new_version}[/green]")
+            else:
+                console.print(f"[yellow]⚠️  Update completed but verification failed: {verify_msg}[/yellow]")
+        else:
+            console.print(Panel(
+                f"❌ {message}",
+                title=f"Update Failed: {host}",
+                title_align="left",
+                style="red"
+            ))
+            raise typer.Exit(1)
+
+    except KeyError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        raise typer.Exit(1)
+    except FileNotFoundError:
+        console.print("[red]❌ Configuration file not found[/red]")
+        console.print("Run [bold]pgsqlmgr init-config[/bold] to create a configuration file")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]❌ Error during update: {e}[/red]")
         raise typer.Exit(1)
 
 
