@@ -179,43 +179,44 @@ def list_hosts(
                     else:
                         os_info = "Cloud"
                     
-                    # Check PostgreSQL installation
+                    # Check PostgreSQL installation and connection
                     try:
                         is_installed, status_msg, version_info = pg_manager.check_postgresql_installation()
                         
-                        if is_installed and version_info:
+                        if is_installed:
                             # Parse and format PostgreSQL version information
-                            version_info = version_info.strip()
+                            version_display = "Installed"
+                            if version_info:
+                                version_info = version_info.strip()
+                                
+                                # Extract just the version number
+                                import re
+                                
+                                # Match different version formats and extract just the version number
+                                # Examples: 
+                                # "psql (PostgreSQL) 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)" -> "v16.9"
+                                # "psql (PostgreSQL) 15.4" -> "v15.4" 
+                                # "PostgreSQL 16.9" -> "v16.9"
+                                patterns = [
+                                    r'psql \(PostgreSQL\) (\d+\.?\d*(?:\.\d+)?)',  # psql output format
+                                    r'PostgreSQL (\d+\.?\d*(?:\.\d+)?)',           # Direct PostgreSQL format
+                                    r'(\d+\.?\d*(?:\.\d+)?)',                      # Just version number
+                                ]
+                                
+                                for pattern in patterns:
+                                    match = re.search(pattern, version_info, re.IGNORECASE)
+                                    if match:
+                                        version_num = match.group(1)
+                                        version_display = f"v{version_num}"
+                                        break
                             
-                            # Extract just the version number
-                            import re
-                            
-                            # Match different version formats and extract just the version number
-                            # Examples: 
-                            # "psql (PostgreSQL) 16.9 (Ubuntu 16.9-0ubuntu0.24.04.1)" -> "v16.9"
-                            # "psql (PostgreSQL) 15.4" -> "v15.4" 
-                            # "PostgreSQL 16.9" -> "v16.9"
-                            patterns = [
-                                r'psql \(PostgreSQL\) (\d+\.?\d*(?:\.\d+)?)',  # psql output format
-                                r'PostgreSQL (\d+\.?\d*(?:\.\d+)?)',           # Direct PostgreSQL format
-                                r'(\d+\.?\d*(?:\.\d+)?)',                      # Just version number
-                            ]
-                            
-                            version_display = None
-                            for pattern in patterns:
-                                match = re.search(pattern, version_info, re.IGNORECASE)
-                                if match:
-                                    version_num = match.group(1)
-                                    version_display = f"v{version_num}"
-                                    break
-                            
-                            if not version_display:
-                                # Fallback: show "Installed" if we can't parse version
-                                version_display = "Installed"
-                            
-                            pg_status = f"✅ {version_display}"
-                        elif is_installed:
-                            pg_status = "✅ Installed"
+                            # Test actual database connection
+                            can_connect, conn_msg = pg_manager.test_database_connection()
+                            if can_connect:
+                                pg_status = f"✅ {version_display}"
+                            else:
+                                # Show version but indicate connection issues
+                                pg_status = f"⚠️ {version_display} ({conn_msg})"
                         else:
                             pg_status = "❌ Not installed"
                     except Exception:

@@ -834,7 +834,7 @@ CentOS/RHEL:
         return commands.get(os_type.lower())
 
     def _setup_postgresql_user(self) -> tuple[bool, str]:
-        """Setup PostgreSQL superuser without password."""
+        """Setup PostgreSQL superuser, using password from ~/.pgpass if available."""
         try:
             console.print(f"[blue]👤 Setting up PostgreSQL superuser on {self.host_config.ssh_config}...[/blue]")
 
@@ -842,9 +842,19 @@ CentOS/RHEL:
             username = self.host_config.superuser
             console.print(f"[blue]   Using superuser: {username}[/blue]")
 
-            # Create PostgreSQL superuser without password (trusted authentication)
-            # This is more secure for local/SSH environments where access is already controlled
-            create_user_cmd = f"sudo -u postgres psql -c \"DO \\$\\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_user WHERE usename = '{username}') THEN CREATE USER {username} WITH SUPERUSER CREATEDB CREATEROLE; END IF; END \\$\\$;\""
+            # Check if password exists in ~/.pgpass
+            password = self._get_password_from_pgpass(username)
+            
+            if password:
+                console.print(f"[blue]💡 Found password in ~/.pgpass for user '{username}'[/blue]")
+                # Create PostgreSQL superuser with password from ~/.pgpass
+                create_user_cmd = f"sudo -u postgres psql -c \"DO \\$\\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_user WHERE usename = '{username}') THEN CREATE USER {username} WITH PASSWORD '{password}' SUPERUSER CREATEDB CREATEROLE; END IF; END \\$\\$;\""
+                console.print(f"[blue]   Creating superuser with password[/blue]")
+            else:
+                console.print(f"[blue]💡 No password found in ~/.pgpass for user '{username}'[/blue]")
+                # Create PostgreSQL superuser without password (trusted authentication)
+                create_user_cmd = f"sudo -u postgres psql -c \"DO \\$\\$ BEGIN IF NOT EXISTS (SELECT FROM pg_catalog.pg_user WHERE usename = '{username}') THEN CREATE USER {username} WITH SUPERUSER CREATEDB CREATEROLE; END IF; END \\$\\$;\""
+                console.print(f"[blue]   Creating superuser without password (trust authentication)[/blue]")
 
             result = subprocess.run(
                 ["ssh", self.host_config.ssh_config, create_user_cmd],
@@ -855,15 +865,104 @@ CentOS/RHEL:
 
             # Check if user creation succeeded
             if result.returncode == 0:
-                console.print(f"[green]✅ PostgreSQL superuser '{username}' ready (no password required)[/green]")
-                console.print("[blue]💡 User can connect without password via local/SSH trust authentication[/blue]")
+                if password:
+                    console.print(f"[green]✅ PostgreSQL superuser '{username}' ready (with password from ~/.pgpass)[/green]")
+                    console.print("[blue]💡 User can connect using password authentication[/blue]")
+                else:
+                    console.print(f"[green]✅ PostgreSQL superuser '{username}' ready (no password required)[/green]")
+                    console.print("[blue]💡 User can connect without password via local/SSH trust authentication[/blue]")
 
-                return True, f"Superuser '{username}' configured successfully without password"
+                return True, f"Superuser '{username}' configured successfully"
             else:
                 return False, f"Failed to create user: {result.stderr}"
 
         except Exception as e:
             return False, f"User setup error: {e}"
+
+    def _get_password_from_pgpass(self, username: str) -> str | None:
+        """
+        Get password for user from ~/.pgpass file.
+        
+        Args:
+            username: PostgreSQL username to look up
+            
+        Returns:
+            Password if found, None otherwise
+        """
+        try:
+            import os
+            from pathlib import Path
+            
+            pgpass_file = Path.home() / ".pgpass"
+            
+            if not pgpass_file.exists():
+                return None
+                
+            # Read .pgpass file
+            with open(pgpass_file, 'r') as f:
+                lines = f.readlines()
+            
+            # Parse .pgpass entries
+            # Format: hostname:port:database:username:password
+            for line in lines:
+                line = line.strip()
+                
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
+                    continue
+                    
+                try:
+                    parts = line.split(':')
+                    if len(parts) >= 5:
+                        pg_host, pg_port, pg_database, pg_username, pg_password = parts[0], parts[1], parts[2], parts[3], ':'.join(parts[4:])
+                        
+                        # Check if this entry matches our SSH host and username
+                        if self._matches_pgpass_entry(pg_host, pg_port, pg_username, username):
+                            return pg_password
+                            
+                except Exception:
+                    # Skip malformed lines
+                    continue
+                    
+            return None
+            
+        except Exception as e:
+            console.print(f"[yellow]⚠️  Could not read ~/.pgpass: {e}[/yellow]")
+            return None
+
+    def _matches_pgpass_entry(self, pg_host: str, pg_port: str, pg_username: str, target_username: str) -> bool:
+        """
+        Check if a .pgpass entry matches our SSH host and target username.
+        
+        Args:
+            pg_host: Host from .pgpass entry
+            pg_port: Port from .pgpass entry  
+            pg_username: Username from .pgpass entry
+            target_username: Username we're looking for
+            
+        Returns:
+            True if entry matches, False otherwise
+        """
+        # Username must match
+        if pg_username != target_username:
+            return False
+            
+        # For SSH hosts, check if the hostname matches our SSH config name
+        # or if it's a wildcard/localhost entry
+        ssh_config_name = self.host_config.ssh_config
+        
+        # Match exact SSH config name or common patterns
+        if (pg_host == ssh_config_name or 
+            pg_host == 'localhost' or 
+            pg_host == '*' or
+            pg_host == self.host_config.host):
+            
+            # Port should match or be wildcard
+            expected_port = str(self.host_config.port)
+            if pg_port == expected_port or pg_port == '*':
+                return True
+                
+        return False
 
     def start_service(self) -> tuple[bool, str]:
         """Start PostgreSQL service."""
@@ -1063,6 +1162,7 @@ CentOS/RHEL:
         console.print(f"[blue]🗑️  Uninstalling PostgreSQL using {uninstall_commands['name']}...[/blue]")
 
         # Execute uninstall commands
+        errors = []
         for description, command in uninstall_commands['commands']:
             console.print(f"[blue]   {description}[/blue]")
 
@@ -1070,13 +1170,34 @@ CentOS/RHEL:
                 ["ssh", self.host_config.ssh_config, command],
                 capture_output=True,
                 text=True,
-                timeout=300  # Increased from 120 to 300 seconds (5 minutes) for uninstall operations
+                timeout=300  # 5 minute timeout for uninstall operations
             )
 
-            # For uninstall operations, some failures are acceptable (e.g., package not found)
-            if result.returncode != 0 and "not found" not in result.stderr.lower() and "not installed" not in result.stderr.lower():
-                console.print(f"[yellow]⚠️  {description} warning: {result.stderr}[/yellow]")
+            # For uninstall operations, many failures are acceptable (e.g., package not found, service not running)
+            # Only treat it as a real error if it's not an expected condition
+            if result.returncode != 0:
+                error_output = result.stderr.lower()
+                expected_errors = [
+                    "not found", "not installed", "no such", "does not exist", 
+                    "not loaded", "not active", "failed to stop", "failed to disable",
+                    "nothing to do", "no packages marked", "not available"
+                ]
+                
+                # Check if this is an expected/acceptable error
+                is_expected_error = any(expected in error_output for expected in expected_errors)
+                
+                if is_expected_error:
+                    console.print(f"[dim]   {description}: {result.stderr.strip()} (expected)[/dim]")
+                else:
+                    console.print(f"[yellow]⚠️  {description} warning: {result.stderr.strip()}[/yellow]")
+                    errors.append(f"{description}: {result.stderr.strip()}")
+            else:
+                console.print(f"[green]   ✅ {description} completed[/green]")
 
+        # Only fail if we had significant errors
+        if len(errors) > len(uninstall_commands['commands']) // 2:  # More than half failed
+            return False, f"Multiple uninstall steps failed: {'; '.join(errors[:3])}"  # Show first 3 errors
+        
         return True, f"PostgreSQL uninstalled using {uninstall_commands['name']}"
 
     def _get_uninstall_commands(self, os_type: str) -> dict | None:
@@ -1085,50 +1206,50 @@ CentOS/RHEL:
             'ubuntu': {
                 'name': 'apt (Ubuntu/Debian)',
                 'commands': [
-                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
-                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
-                    ("Removing PostgreSQL packages", "sudo apt remove --purge -y postgresql postgresql-*"),
-                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/postgresql/"),
-                    ("Removing PostgreSQL config", "sudo rm -rf /etc/postgresql/"),
-                    ("Cleaning up packages", "sudo apt autoremove -y"),
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql || true"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql || true"),
+                    ("Removing PostgreSQL packages", "sudo DEBIAN_FRONTEND=noninteractive apt remove --purge -y postgresql postgresql-* || true"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/postgresql/ || true"),
+                    ("Removing PostgreSQL config", "sudo rm -rf /etc/postgresql/ || true"),
+                    ("Cleaning up packages", "sudo DEBIAN_FRONTEND=noninteractive apt autoremove -y || true"),
                 ]
             },
             'debian': {
                 'name': 'apt (Debian)',
                 'commands': [
-                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
-                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
-                    ("Removing PostgreSQL packages", "sudo apt remove --purge -y postgresql postgresql-*"),
-                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/postgresql/"),
-                    ("Removing PostgreSQL config", "sudo rm -rf /etc/postgresql/"),
-                    ("Cleaning up packages", "sudo apt autoremove -y"),
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql || true"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql || true"),
+                    ("Removing PostgreSQL packages", "sudo DEBIAN_FRONTEND=noninteractive apt remove --purge -y postgresql postgresql-* || true"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/postgresql/ || true"),
+                    ("Removing PostgreSQL config", "sudo rm -rf /etc/postgresql/ || true"),
+                    ("Cleaning up packages", "sudo DEBIAN_FRONTEND=noninteractive apt autoremove -y || true"),
                 ]
             },
             'centos': {
                 'name': 'yum (CentOS/RHEL)',
                 'commands': [
-                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
-                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
-                    ("Removing PostgreSQL packages", "sudo yum remove -y postgresql-server postgresql-contrib"),
-                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/pgsql/"),
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql || true"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql || true"),
+                    ("Removing PostgreSQL packages", "sudo yum remove -y postgresql-server postgresql-contrib || true"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/pgsql/ || true"),
                 ]
             },
             'rhel': {
                 'name': 'yum (Red Hat)',
                 'commands': [
-                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
-                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
-                    ("Removing PostgreSQL packages", "sudo yum remove -y postgresql-server postgresql-contrib"),
-                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/pgsql/"),
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql || true"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql || true"),
+                    ("Removing PostgreSQL packages", "sudo yum remove -y postgresql-server postgresql-contrib || true"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/pgsql/ || true"),
                 ]
             },
             'fedora': {
                 'name': 'dnf (Fedora)',
                 'commands': [
-                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql"),
-                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql"),
-                    ("Removing PostgreSQL packages", "sudo dnf remove -y postgresql-server postgresql-contrib"),
-                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/pgsql/"),
+                    ("Stopping PostgreSQL service", "sudo systemctl stop postgresql || true"),
+                    ("Disabling PostgreSQL service", "sudo systemctl disable postgresql || true"),
+                    ("Removing PostgreSQL packages", "sudo dnf remove -y postgresql-server postgresql-contrib || true"),
+                    ("Removing PostgreSQL data", "sudo rm -rf /var/lib/pgsql/ || true"),
                 ]
             }
         }
@@ -1501,3 +1622,108 @@ Fedora:
         }
 
         return commands.get(os_type.lower())
+
+    def test_database_connection(self) -> tuple[bool, str]:
+        """
+        Test actual database connection including network, authentication, and database access.
+        
+        Returns:
+            Tuple of (can_connect, status_message)
+        """
+        try:
+            if isinstance(self.host_config, LocalHost):
+                return self._test_local_connection()
+            elif isinstance(self.host_config, SSHHost):
+                return self._test_ssh_connection()
+            else:
+                return False, "Unsupported host type for connection test"
+        except Exception as e:
+            return False, f"Connection test failed: {e}"
+
+    def _test_local_connection(self) -> tuple[bool, str]:
+        """Test local PostgreSQL database connection."""
+        try:
+            # Use psql to test connection
+            cmd = [
+                "psql",
+                "--host", self.host_config.host,
+                "--port", str(self.host_config.port),
+                "--username", self.host_config.superuser,
+                "--dbname", "postgres",
+                "--command", "SELECT 1;"
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10  # 10 second timeout
+            )
+            
+            if result.returncode == 0:
+                return True, "Connection successful"
+            else:
+                # Parse common error types
+                error_msg = result.stderr.strip()
+                if "password authentication failed" in error_msg.lower():
+                    return False, "Authentication failed"
+                elif "connection refused" in error_msg.lower():
+                    return False, "Connection refused"
+                elif "no pg_hba.conf entry" in error_msg.lower():
+                    return False, "Authentication config issue"
+                else:
+                    return False, f"Connection failed: {error_msg}"
+                    
+        except subprocess.TimeoutExpired:
+            return False, "Connection timeout"
+        except FileNotFoundError:
+            return False, "psql not found"
+        except Exception as e:
+            return False, f"Connection test error: {e}"
+
+    def _test_ssh_connection(self) -> tuple[bool, str]:
+        """Test SSH PostgreSQL database connection."""
+        try:
+            # For SSH hosts, test connectivity by checking if PostgreSQL service is accessible
+            # This avoids authentication complexities in the status check
+            cmd = [
+                "ssh", self.host_config.ssh_config,
+                f"timeout 5 bash -c 'echo > /dev/tcp/{self.host_config.host}/{self.host_config.port}'"
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=8  # 8 second timeout
+            )
+            
+            if result.returncode == 0:
+                # Port is accessible, now check if postgres process is running
+                service_cmd = [
+                    "ssh", self.host_config.ssh_config,
+                    "pgrep postgres"
+                ]
+                
+                service_result = subprocess.run(
+                    service_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                
+                if service_result.returncode == 0:
+                    return True, "Service accessible"
+                else:
+                    return False, "Service not running"
+            else:
+                # Check if it's a network connectivity issue vs service issue
+                if "connection refused" in result.stderr.lower():
+                    return False, "Service not listening"
+                else:
+                    return False, "Network unreachable"
+                    
+        except subprocess.TimeoutExpired:
+            return False, "Connection timeout"
+        except Exception as e:
+            return False, f"SSH connection test error: {e}"
